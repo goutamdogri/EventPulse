@@ -166,7 +166,7 @@ Watch the `dropped_iterations` metric. If k6 cannot start requests on schedule, 
 
 ### wrk2 example
 
-```
+```bash
 wrk -t2 -c100 -d60s -R2000 --latency http://SERVER:3000/health
 ```
 
@@ -292,7 +292,7 @@ Plot at minimum: latency percentiles vs offered rate (the knee), CPU vs rate, an
 
 Create `notebook/_template.md` and copy it for every experiment.
 
-```
+```txt
 # Experiment: <ID and name>
 Date:
 Commit:
