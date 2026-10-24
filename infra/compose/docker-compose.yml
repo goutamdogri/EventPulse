@@ -1,0 +1,78 @@
+# EventPulse observability stack (Stage 0+): Prometheus + node_exporter + Grafana.
+# Run from this directory:   docker compose up -d --remove-orphans
+#
+# CPU layout of the dev machine (6 physical cores, 12 logical CPUs; SMT siblings: 0/6 1/7 2/8 3/9 4/10 5/11):
+#   0,6            -> Node server under test   (taskset -c 0,6 node ...)
+#   1,2,3,7,8,9    -> k6 load generator        (taskset in the run script)
+#   4,5,10,11      -> this monitoring stack    (cpuset below)
+# Edit the cpuset values if your pinning changes.
+#
+# Versions: images use :latest. Record what you actually ran with `docker compose images`
+# and pin those tags once results matter (methodology: record versions with every result).
+
+name: eventpulse
+
+x-monitoring-cpus: &monitoring-cpus "5,11"
+
+services:
+  prom-server:
+    image: prom/prometheus:latest
+    cpuset: *monitoring-cpus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-remote-write-receiver   # k6 pushes metrics here
+      - --web.enable-lifecycle               # lets you reload config: curl -X POST localhost:9090/-/reload
+      - --enable-feature=native-histograms   # needed for k6 native-histogram latency
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    cpuset: *monitoring-cpus
+    pid: host
+    network_mode: host                       # sees the HOST network (loopback, ListenOverflows). Reachable at host.docker.internal:9100
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+      - ./textfile:/var/lib/node_exporter/textfile:ro   # scripts/listen-queue-exporter.sh writes ep_listen.prom here
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --web.listen-address=0.0.0.0:9100
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    cpuset: *monitoring-cpus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s      # default is 5s, which blocks the 1s refresh option
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana             # Grafana's database: UI-saved dashboards live HERE and persist
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/ui-dashboards:/etc/grafana/ui-dashboards:ro
+    depends_on:
+      - prom-server
+    restart: unless-stopped
+
+volumes:
+  prom-data:
+    name: eventpulse-prom-data
+  grafana-data:
+    name: eventpulse-grafana-data

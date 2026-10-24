@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 1s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Node app (prom-client). 2s instead of 1s: /metrics runs on the same single thread you are saturating.
+  - job_name: eventpulse-nodejs
+    scrape_interval: 2s
+    scrape_timeout: 1s
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+
+  # node_exporter runs with network_mode: host, so it is NOT reachable as "node-exporter".
+  - job_name: node
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+
+  - job_name: prometheus
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["localhost:9090"]
