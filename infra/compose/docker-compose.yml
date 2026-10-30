@@ -52,6 +52,12 @@ services:
       - --collector.textfile.directory=/var/lib/node_exporter/textfile
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
     restart: unless-stopped
+    
+  renderer:
+    image: grafana/grafana-image-renderer:latest
+    environment:
+      AUTH_TOKEN: ${GRAFANA_RENDERER_TOKEN}
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana-oss:latest
@@ -62,6 +68,10 @@ services:
       GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s      # default is 5s, which blocks the 1s refresh option
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_RENDERING_SERVER_URL: http://renderer:8081/render
+      GF_RENDERING_CALLBACK_URL: http://grafana:3000/
+      GF_RENDERING_RENDERER_TOKEN: ${GRAFANA_RENDERER_TOKEN}
+
     volumes:
       - grafana-data:/var/lib/grafana             # Grafana's database: UI-saved dashboards live HERE and persist
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
@@ -69,6 +79,7 @@ services:
       - ./grafana/ui-dashboards:/etc/grafana/ui-dashboards:ro
     depends_on:
       - prom-server
+      - renderer
     restart: unless-stopped
 
 volumes:
