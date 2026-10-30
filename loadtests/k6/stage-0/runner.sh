@@ -18,6 +18,7 @@ done < <(compgen -e)
 # 2. Harness configuration and defaults
 # ------------------------------------------------------------
 
+LABEL="${LABEL:-}"
 REPS="${REPS:-1}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="${SCRIPT:-myTestScript.js}"
@@ -48,6 +49,7 @@ export K6_PROMETHEUS_RW_TREND_STATS
 # ------------------------------------------------------------
 
 HARNESS_ENV_VARS=(
+    LABEL
     REPS
     SCRIPT
     SCRIPT_DIR
@@ -233,8 +235,8 @@ curl -fsS --max-time 5 "${BASE_URL}${ROUTE}" >/dev/null ||
 # ------------------------------------------------------------
 
 for ((laps = 1; laps <= REPS; laps++)); do
-    OUTPUT_FILE="$RESULTS_DIR/${laps}-lap.json"
-    TESTID="${RESULTS_NAME}-${TIMESTAMP}-lap-${laps}"
+    OUTPUT_FILE="$RESULTS_DIR/$LABEL _$laps-lap.json"
+    TESTID="${LABEL}_${RESULTS_NAME}-${TIMESTAMP}-lap-${laps}"
 
     START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
 

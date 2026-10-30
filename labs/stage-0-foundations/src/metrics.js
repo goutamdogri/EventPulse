@@ -39,6 +39,16 @@ export function createMetrics({ pool, loopDelay, state }) {
       this.set({ quantile: "0.5" }, loopDelay.percentile(50) / 1e9);
       this.set({ quantile: "0.99" }, loopDelay.percentile(99) / 1e9);
       this.set({ quantile: "max" }, loopDelay.max / 1e9);
+
+      /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+          Note:-
+          loopDelay comes from monitorEventLoopDelay().
+          It keeps every sample since we called loopDelay.enable(),
+          or since the last loopDelay.reset().
+          reset() empties the histogram, so the next measurements start from zero.
+          Otherwise loopdelay.max is maximum of all collected data, not the max of last second.
+      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+      loopDelay.reset();
     },
   });
 
@@ -72,6 +82,47 @@ export function createMetrics({ pool, loopDelay, state }) {
     help: "Number of /stall calls (synchronous event-loop blocks).",
     registers: [register],
   });
+
+  new client.Gauge({
+    name: "eventpulse_cpu_worker_pool_size",
+    help: "Configured number of worker threads in the pool.",
+    registers: [register],
+    collect() {
+      this.set(pool.stats().size);
+    },
+  });
+
+  // Buckets reach 480 s because the wait grows to ~150 s at the end of C1
+  const WAIT_BUCKETS = [
+    0.001, 0.01, 0.05, 0.1, 0.35, 0.5, 1, 2, 5, 10, 30, 60, 120, 240, 480,
+  ];
+
+  const workerWait = new client.Histogram({
+    name: "eventpulse_cpu_worker_wait_seconds",
+    help: "Time a job spent queued before a worker picked it up.",
+    buckets: WAIT_BUCKETS,
+    registers: [register],
+  });
+  const workerRun = new client.Histogram({
+    name: "eventpulse_cpu_worker_run_seconds",
+    help: "Time a job spent executing in a worker.",
+    buckets: WAIT_BUCKETS,
+    registers: [register],
+  });
+  const workerJobs = new client.Counter({
+    name: "eventpulse_cpu_worker_jobs_total",
+    help: "Worker jobs by outcome.",
+    labelNames: ["outcome"],
+    registers: [register],
+  });
+  for (const o of ["completed", "rejected", "failed"])
+    workerJobs.labels(o).inc(0); // series exist from the start
+
+  pool.hooks = {
+    wait: (s) => workerWait.observe(s),
+    run: (s) => workerRun.observe(s),
+    outcome: (o) => workerJobs.inc({ outcome: o }),
+  };
 
   return {
     register,

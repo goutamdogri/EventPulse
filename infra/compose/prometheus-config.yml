@@ -5,7 +5,7 @@ global:
 scrape_configs:
   # Node app (prom-client). 2s instead of 1s: /metrics runs on the same single thread you are saturating.
   - job_name: eventpulse-nodejs
-    scrape_interval: 2s
+    scrape_interval: 1s
     scrape_timeout: 1s
     static_configs:
       - targets: ["host.docker.internal:8000"]
