@@ -124,11 +124,31 @@ export function createMetrics({ pool, loopDelay, state }) {
     outcome: (o) => workerJobs.inc({ outcome: o }),
   };
 
+  const connOpen = new client.Gauge({
+    name: "http_connections_open",
+    help: "Open TCP connections",
+    registers: [register],
+  });
+  const connTotal = new client.Counter({
+    name: "http_connections_total",
+    help: "Accepted connections",
+    registers: [register],
+  });
+  const serverErrors = new client.Counter({
+    name: "http_server_errors_total",
+    help: "Server-level errors",
+    labelNames: ["code"],
+    registers: [register],
+  });
+
   return {
     register,
     httpRequestsTotal,
     httpRequestDuration,
     echoBodyBytes,
     stallsTotal,
+    connOpen,
+    connTotal,
+    serverErrors,
   };
 }

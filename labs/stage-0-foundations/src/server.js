@@ -30,9 +30,16 @@ const server = http.createServer(async (req, res) => {
 
   // Record when the response is fully written, not before the handler runs.
   res.on("finish", () => {
-    const labels = { method: req.method, route, status_code: String(res.statusCode) };
+    const labels = {
+      method: req.method,
+      route,
+      status_code: String(res.statusCode),
+    };
     metrics.httpRequestsTotal.inc(labels);
-    metrics.httpRequestDuration.observe(labels, Number(process.hrtime.bigint() - start) / 1e9);
+    metrics.httpRequestDuration.observe(
+      labels,
+      Number(process.hrtime.bigint() - start) / 1e9,
+    );
   });
   // 'close' fires for completed and aborted requests alike.
   res.on("close", () => {
@@ -40,10 +47,16 @@ const server = http.createServer(async (req, res) => {
   });
 
   try {
-    if (route === "unmatched") return sendJson(res, 404, { error: "not found" });
+    if (route === "unmatched")
+      return sendJson(res, 404, { error: "not found" });
     const handler = routes[pathname][req.method];
     if (!handler) {
-      return sendJson(res, 405, { error: "method not allowed" }, { allow: Object.keys(routes[pathname]).join(", ") });
+      return sendJson(
+        res,
+        405,
+        { error: "method not allowed" },
+        { allow: Object.keys(routes[pathname]).join(", ") },
+      );
     }
     await handler(req, res, search);
   } catch (err) {
@@ -59,6 +72,24 @@ server.listen(config.PORT, "0.0.0.0", () => {
   );
 });
 
+server.on("connection", (socket) => {
+  metrics.connOpen.inc();
+  metrics.connTotal.inc();
+
+  socket.on("close", () => metrics.connOpen.dec());
+});
+
+server.on("error", (err) => {
+  serverErrors.inc({ code: err.code || "unknown" });
+  console.error("server error", err.code, err.message);
+});
+
+server.on("clientError", (err, sock) => {
+  console.error("server error", err.code, err.message);
+  serverErrors.inc({ code: err.code || "clientError" });
+  sock.destroy();
+});
+
 const shutdown = async () => {
   server.close();
   await pool.close();
@@ -66,3 +97,6 @@ const shutdown = async () => {
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+process.on("uncaughtException", (err) => {
+  console.error("uncaught", err.code, err.message);
+});
