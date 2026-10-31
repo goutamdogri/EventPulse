@@ -71,6 +71,17 @@ Command to analyzes the file descriptors (FDs) opened by a process and counts ho
 ls -l /proc/$PID/fd | awk '{print $NF}' | cut -d: -f1 | sort | uniq -c
 ```
 
+Command to watch `EMFILE` error within the process
+
+```bash
+sudo strace -f -tt -e trace=accept4,close,openat -p $PID -o /tmp/e05.strace
+# after ~10 s of plateau, Ctrl-C, then:
+grep -n -B2 -A4 EMFILE /tmp/e05.strace | head -60
+
+# To see the spare fd directly
+ls -l /proc/$PID/fd | grep -- '-> /$'
+```
+
 Change the fd limit of server before each run.
 
 1. FD limit of the server = 256. Run the server.
