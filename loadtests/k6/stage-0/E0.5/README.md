@@ -65,6 +65,12 @@ grep 'open files' /proc/<PID>/limits
 
 ## 4. Run k6 script
 
+Command to analyzes the file descriptors (FDs) opened by a process and counts how many belong to each file type or category (depending on the symlink target). Run this during the test.
+
+```bash
+ls -l /proc/$PID/fd | awk '{print $NF}' | cut -d: -f1 | sort | uniq -c
+```
+
 Change the fd limit of server before each run.
 
 1. FD limit of the server = 256. Run the server.

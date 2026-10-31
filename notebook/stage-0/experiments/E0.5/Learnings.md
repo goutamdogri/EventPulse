@@ -22,3 +22,15 @@ This is what we want to demonstrate.
 
 Our hypothesis:
 If we restrict the server to 256 file descriptors and continuously open connections, the server will eventually fail to accept new connections.
+
+## Explaination of the fd analysis command
+
+```bash
+ls -l /proc/$PID/fd | awk '{print $NF}' | cut -d: -f1 | sort | uniq -c
+```
+
+1. `ls -l /proc/$PID/fd`: Displays the symlink targets present at `/proc/$PID/fd`
+2. `awk '{print $NF}'`: processes input line by line and prints that last field.
+3. `cut -d: -f1`: `-d:` specifies `:` as the delimiter. `-f1` extracts the first field.
+4. `sort`: Sorts the output alphabetically.
+5. `uniq -c`: Counts consecutive duplicate lines.
