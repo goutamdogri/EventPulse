@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
@@ -132,7 +131,12 @@ done
 # 6. Ask for a results folder name
 # ------------------------------------------------------------
 
-read -r -p "Result folder name [default]: " RESULTS_NAME
+# Non-interactive use (e.g. step.sh): set RESULTS_NAME in the environment.
+# Interactive use is unchanged: if it is not set, you are prompted as before.
+RESULTS_NAME="${RESULTS_NAME:-}"
+if [[ -z "$RESULTS_NAME" ]]; then
+    read -r -p "Result folder name [default]: " RESULTS_NAME
+fi
 RESULTS_NAME="${RESULTS_NAME:-default}"
 
 [[ "$RESULTS_NAME" =~ ^[a-zA-Z0-9._-]+$ ]] ||
@@ -235,7 +239,7 @@ curl -fsS --max-time 5 "${BASE_URL}${ROUTE}" >/dev/null ||
 # ------------------------------------------------------------
 
 for ((laps = 1; laps <= REPS; laps++)); do
-    OUTPUT_FILE="$RESULTS_DIR/$LABEL _$laps-lap.json"
+    OUTPUT_FILE="$RESULTS_DIR/${LABEL}_${laps}-lap.json"
     TESTID="${LABEL}_${RESULTS_NAME}-${TIMESTAMP}-lap-${laps}"
 
     START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -252,6 +256,7 @@ for ((laps = 1; laps <= REPS; laps++)); do
         -o experimental-prometheus-rw
         --tag "testid=$TESTID"
         --summary-export="$OUTPUT_FILE"
+        -e "ROUTE=$ROUTE"
         "${K6_ENV_ARGS[@]}"
         "$SCRIPT_DIR/$SCRIPT"
     )
