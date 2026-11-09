@@ -1,0 +1,11 @@
+{
+  "name": "@eventpulse/stage-0-foundations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@prometheus-io/client": "^0.16.1"
+  }
+}

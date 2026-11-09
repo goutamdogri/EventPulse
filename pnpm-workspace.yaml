@@ -1,0 +1,6 @@
+packages:
+  - "services/*"
+  - "apps/*"
+  - "packages/*"
+  - "labs/stage-0-foundations"
+  - "tools/*"
