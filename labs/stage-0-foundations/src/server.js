@@ -66,9 +66,15 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(config.PORT, "0.0.0.0", () => {
+// E0.8: only pass a backlog when LISTEN_BACKLOG is set, so the default call is unchanged.
+const listenArgs =
+  config.LISTEN_BACKLOG === undefined
+    ? [config.PORT, "0.0.0.0"]
+    : [config.PORT, "0.0.0.0", config.LISTEN_BACKLOG];
+
+server.listen(...listenArgs, () => {
   console.log(
-    `stage-0 server on :${config.PORT} | workers=${config.WORKERS} maxQueue=${config.MAX_QUEUE} maxBody=${config.MAX_BODY_BYTES}B`,
+    `stage-0 server on :${config.PORT} | workers=${config.WORKERS} maxQueue=${config.MAX_QUEUE} maxBody=${config.MAX_BODY_BYTES}B backlog=${config.LISTEN_BACKLOG ?? "default"}`,
   );
 });
 
