@@ -1,7 +1,10 @@
 // Small HTTP helpers for node:http handlers.
 
-export const sendJson = (res, status, obj, extraHeaders = {}) => {
+export const sendJson = (res, status, obj, extraHeaders = {}, opts = {}) => {
+  const t1 = process.hrtime.bigint();
   const body = JSON.stringify(obj);
+  opts.onStringify?.(Number(process.hrtime.bigint() - t1) / 1e9);
+
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(body),

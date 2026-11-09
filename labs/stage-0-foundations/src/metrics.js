@@ -77,6 +77,26 @@ export function createMetrics({ pool, loopDelay, state }) {
     registers: [register],
   });
 
+  const echoParse = new client.Histogram({
+    name: "eventpulse_echo_parse_seconds",
+    help: "Time spent in JSON.parse for POST /echo.",
+    buckets: [
+      0.00001, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01,
+      0.025,
+    ],
+    registers: [register],
+  });
+
+  const echoStringify = new client.Histogram({
+    name: "eventpulse_echo_stringify_seconds",
+    help: "Time spent in JSON.stringify for POST /echo.",
+    buckets: [
+      0.00001, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01,
+      0.025,
+    ],
+    registers: [register],
+  });
+
   const stallsTotal = new client.Counter({
     name: "eventpulse_stalls_total",
     help: "Number of /stall calls (synchronous event-loop blocks).",
@@ -146,6 +166,8 @@ export function createMetrics({ pool, loopDelay, state }) {
     httpRequestsTotal,
     httpRequestDuration,
     echoBodyBytes,
+    echoParse,
+    echoStringify,
     stallsTotal,
     connOpen,
     connTotal,

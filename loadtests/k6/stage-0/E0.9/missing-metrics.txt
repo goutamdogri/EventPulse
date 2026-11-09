@@ -1,0 +1,69 @@
+E0.9 missing metrics
+====================
+Checked against: metrics-inventory.tsv (the file in the project, jobs: eventpulse-nodejs, node, prometheus).
+Everything else the dashboard uses IS in that inventory. Only the two metrics below are missing.
+They are OPTIONAL: the experiment and every other panel work without them. They give the direct
+measurement of "how much of the time is JSON.parse / JSON.stringify". Until they exist and the
+server is restarted, the panel "JSON.parse and JSON.stringify time per request (MISSING metric)" shows "No data".
+
+I have NOT seen labs/stage-0-foundations/src/routes/echo.js, so the snippets below are a sketch.
+Adapt them to how that file reads the body and how metrics.js registers prom-client metrics.
+
+---------------------------------------------------------------------------------------------
+METRIC: eventpulse_echo_parse_seconds
+TYPE:   histogram
+LABELS: none
+BUCKETS: 0.00001, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025
+         (10 microseconds up to 25 ms: JSON.parse of 100 B is a few microseconds, of 100 KB maybe 0.3 ms to 1 ms)
+WHERE:  server -> labs/stage-0-foundations/src/metrics.js (register) and src/routes/echo.js (observe)
+HOW:
+  // metrics.js
+  const echoParse = new client.Histogram({
+    name: 'eventpulse_echo_parse_seconds',
+    help: 'Time spent in JSON.parse for POST /echo.',
+    buckets: [0.00001, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025],
+  });
+  // echo.js, around the parse call
+  const t0 = process.hrtime.bigint();
+  const parsed = JSON.parse(bodyString);
+  echoParse.observe(Number(process.hrtime.bigint() - t0) / 1e9);
+USED BY: panel "JSON.parse and JSON.stringify time per request (MISSING metric)" (row 2)
+PROM NAME: eventpulse_echo_parse_seconds_bucket, eventpulse_echo_parse_seconds_sum, eventpulse_echo_parse_seconds_count
+           (the dashboard uses the _sum and _count series)
+VERIFY:  count(eventpulse_echo_parse_seconds_count)
+
+---------------------------------------------------------------------------------------------
+METRIC: eventpulse_echo_stringify_seconds
+TYPE:   histogram
+LABELS: none
+BUCKETS: same as above
+WHERE:  server -> labs/stage-0-foundations/src/metrics.js and src/routes/echo.js
+HOW:
+  // metrics.js
+  const echoStringify = new client.Histogram({
+    name: 'eventpulse_echo_stringify_seconds',
+    help: 'Time spent in JSON.stringify for POST /echo.',
+    buckets: [0.00001, 0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025],
+  });
+  // echo.js, around the stringify call
+  const t1 = process.hrtime.bigint();
+  const out = JSON.stringify(parsed);
+  echoStringify.observe(Number(process.hrtime.bigint() - t1) / 1e9);
+USED BY: same panel (row 2)
+PROM NAME: eventpulse_echo_stringify_seconds_bucket, eventpulse_echo_stringify_seconds_sum, eventpulse_echo_stringify_seconds_count
+VERIFY:  count(eventpulse_echo_stringify_seconds_count)
+
+Note: if /echo does not call JSON.parse / JSON.stringify itself (for example it echoes the raw string back),
+the stringify metric will stay at zero. That is itself a finding for the Explanation, so check the file first.
+
+Cost of the instrumentation: two process.hrtime.bigint() calls per request are well under 1 microsecond.
+That is small next to the 60+ microseconds per request I expect, but it is not zero. Add them ONCE and keep
+them for all sizes, so every size pays the same overhead.
+
+Until added and re-run, dashboards show "No data" for these two series.
+
+Assumptions in the dashboard that I could NOT verify from the inventory (the inventory has no labels):
+  1. http_requests_total and http_request_duration_seconds_bucket have a label named  route  (value "/echo").
+  2. eventpulse_event_loop_delay_seconds has a label named  quantile.
+  3. k6_http_req_duration_seconds is a native histogram (the inventory shows no _bucket series for it).
+Verify queries are in the README, section 4.

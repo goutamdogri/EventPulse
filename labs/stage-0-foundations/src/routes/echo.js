@@ -12,10 +12,14 @@ export const echo = ({ config, metrics }) => ({
     metrics.echoBodyBytes.observe(raw.length);
     let parsed;
     try {
+      const t0 = process.hrtime.bigint();
       parsed = JSON.parse(raw.toString("utf8"));
+      metrics.echoParse.observe(Number(process.hrtime.bigint() - t0) / 1e9);
     } catch {
       return sendJson(res, 400, { error: "invalid JSON" });
     }
-    sendJson(res, 200, parsed);
+    sendJson(res, 200, parsed, {}, {
+      onStringify: (seconds) => metrics.echoStringify.observe(seconds),
+    });
   },
 });
