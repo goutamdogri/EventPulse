@@ -183,6 +183,9 @@ importers:
       '@nestjs/platform-express':
         specifier: ^12.0.1
         version: 12.4.2(@nestjs/common@12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.4.2)(rxjs@7.8.2)(supports-color@7.2.0)
+      '@prometheus-io/client':
+        specifier: ^0.16.1
+        version: 0.16.1
       class-transformer:
         specifier: ^0.5.1
         version: 0.5.1
