@@ -5,3 +5,9 @@ current-project-structure.txt
 
 # Environment variable
 .env
+.env*
+!.env.example
+!.env.*.example
+
+# distribution folder
+dist/
