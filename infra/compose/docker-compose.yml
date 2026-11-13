@@ -91,9 +91,9 @@ services:
     container_name: ep-postgres
     cpuset: *monitoring-cpus
     environment:
-      POSTGRES_USER: eventpulse
-      POSTGRES_PASSWORD: eventpulse
-      POSTGRES_DB: eventpulse
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in infra/compose/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/compose/.env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in infra/compose/.env}
     command: >
       postgres
       -c shared_preload_libraries=pg_stat_statements
@@ -107,7 +107,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U eventpulse -d eventpulse"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 2s
       timeout: 2s
       retries: 30

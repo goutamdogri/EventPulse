@@ -13,4 +13,7 @@ async function main() {
   await app.listen(cfg.port, '0.0.0.0');
   console.log(`ingest-api listening on :${cfg.port} pid=${process.pid}`);
 }
-main();
+void main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});

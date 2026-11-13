@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   HttpCode,
-  Module,
   Post,
   UseGuards,
 } from '@nestjs/common';

@@ -3,11 +3,6 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import request from 'supertest'; 
-
-process.env.DATABASE_URL ??=
-  'postgres://eventpulse:eventpulse@localhost:5434/eventpulse';
-process.env.API_KEYS = 'key_a:tenant_a,key_b:tenant_b';
-
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { PG_POOL } from '../src/db/db.module.js';
