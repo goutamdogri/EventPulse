@@ -9,5 +9,9 @@ current-project-structure.txt
 !.env.example
 !.env.*.example
 
+# temporary files and folders
+*.tmp
+/tmp
+
 # distribution folder
 dist/
