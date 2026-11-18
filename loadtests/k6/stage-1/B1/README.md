@@ -4,8 +4,6 @@ This is the first Stage 1 experiment. I send `POST /v1/events` at a steadily ris
 latency bends. The naive design waits for Postgres inside the request, so the bend should be caused by
 the pool, by Postgres, or by Node's CPU. I have to find out which one and prove it with the dashboard.
 
-All files here were generated before I ran anything. Nothing in this README is a result.
-
 ## 1. Run the server
 
 `run.sh` starts and stops `ingest-api` by itself (`MANAGE_SERVER=1`, default). It does **not** use the Stage 0
@@ -43,6 +41,8 @@ Facts I record in `env.txt` for every pass: Postgres version and settings (`sync
 I do not tune anything (Stage 1 rule: defaults are the point).
 
 ## 2. What I am testing
+
+**Purpose:** Finding out the baseline
 
 **Hypothesis (from the stage doc):** latency stays flat, then bends sharply at a knee set by either pool size,
 database commit capacity, or the CPU of the Node process. I predict which one first.

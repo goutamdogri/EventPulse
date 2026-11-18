@@ -126,6 +126,28 @@ select state, wait_event_type, wait_event, count(*) from pg_stat_activity where 
 
 Each row is one backend process. `state` = active / idle / idle in transaction. `wait_event_type` and `wait_event` say what an active backend is
 waiting for: `IO / WALSync` (fsync of the commit), `LWLock / WALWrite`, `Lock / transactionid` (row locks), `Client / ClientRead` (waiting for Node).
+
+1. state — What is the backend currently doing?
+   - active: The backend is currently executing a query. It might be working, or it might be waiting for something required to finish the query.
+   - idle: The backend has finished the previous query and is waiting for the client (such as your NestJS application) to send another query.
+   - idle in transaction: The backend has an open transaction, but the client hasn't sent the next SQL command or committed/rolled back yet. This can be problematic because the transaction may keep locks open and prevent cleanup of old row versions.
+
+2. wait_event_type and wait_event — If the backend is waiting, what is it waiting for?
+
+These columns help you identify why a query or connection is not making progress.
+
+| Wait event           | What it means                                                                                                                                                                                                                                                                                             |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IO / WALSync         | PostgreSQL is waiting for a WAL synchronization operation to finish. For example, during a commit, it may need to wait for the WAL records to be flushed to durable storage before acknowledging the transaction.                                                                                         |
+| LWLock / WALWrite    | The backend is waiting for an internal PostgreSQL lightweight lock associated with WAL writing. Multiple backend processes may need to coordinate access to the WAL-writing path. This is an internal synchronization issue, not the same thing as waiting for the disk flush to finish.                  |
+| Lock / transactionid | The backend is waiting for another transaction to finish. PostgreSQL uses transaction IDs to track transactions. For example, if one transaction has modified a row and another transaction needs to modify that same row, the second transaction may have to wait until the first commits or rolls back. |
+| Client / ClientRead  | PostgreSQL has finished its current work and is waiting to receive the next command or more data from the client application, such as your NestJS server.                                                                                                                                                 |
+
+WALWrite and WALSync are two different kinds of waiting:
+
+- WALWrite is about PostgreSQL coordinating the writing of WAL data.
+- WALSync is about waiting for the written WAL data to be flushed to durable storage.
+
 Many `WALSync` = disk-commit limited. Many `ClientRead` with idle = Postgres is waiting for Node, so Postgres is not the limit.
 It costs a connection, so I take it only in probe runs.
 
