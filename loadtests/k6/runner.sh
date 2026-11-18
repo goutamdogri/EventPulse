@@ -58,6 +58,7 @@ HARNESS_ENV_VARS=(
     BASE_URL
     RESULTS_NAME
     RESULTS_DIR
+    RESULTS_ROOT
     TIMESTAMP
     MANIFEST_FILE
     OUTPUT_FILE
@@ -103,7 +104,7 @@ redact_value() {
     local name="$1"
     local value="$2"
 
-    if [[ "$name" =~ (SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTH) ]]; then
+    if [[ "$name" =~ (SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTH|DATABASE_URL|DATABASE_PASSWORD) ]]; then
         printf '[REDACTED]'
     else
         printf '%s' "$value" |
@@ -145,7 +146,8 @@ RESULTS_NAME="${RESULTS_NAME:-default}"
 [[ "$RESULTS_NAME" != "." && "$RESULTS_NAME" != ".." ]] ||
     die "Invalid result folder name."
 
-RESULTS_DIR="$SCRIPT_DIR/results/$RESULTS_NAME/$TIMESTAMP"
+RESULTS_ROOT="${RESULTS_ROOT:-$SCRIPT_DIR/results}"
+RESULTS_DIR="$RESULTS_ROOT/$RESULTS_NAME/$TIMESTAMP"
 MANIFEST_FILE="$RESULTS_DIR/manifest.md"
 
 mkdir -p -- "$RESULTS_DIR"
@@ -194,7 +196,7 @@ done
     printf '| Variable | Value |\n'
     printf '|---|---|\n'
     for name in \
-        REPS SCRIPT GAP K6_CPUS ROUTE BASE_URL RESULTS_NAME \
+        REPS SCRIPT GAP K6_CPUS ROUTE BASE_URL RESULTS_NAME RESULTS_ROOT \
         K6_PROMETHEUS_RW_PUSH_INTERVAL \
         K6_PROMETHEUS_RW_SERVER_URL \
         K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM \

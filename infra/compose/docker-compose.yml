@@ -4,7 +4,8 @@
 # CPU layout of the dev machine (6 physical cores, 12 logical CPUs; SMT siblings: 0/6 1/7 2/8 3/9 4/10 5/11):
 #   0,6            -> Node server under test   (taskset -c 0,6 node ...)
 #   1,2,3,7,8,9    -> k6 load generator        (taskset in the run script)
-#   4,5,10,11      -> this monitoring stack    (cpuset below)
+#   4,10           -> Postgres (cpuset below)
+#   5,11      -> this monitoring stack    (cpuset below)
 # Edit the cpuset values if your pinning changes.
 #
 # Versions: images use :latest. Record what you actually ran with `docker compose images`
@@ -12,6 +13,7 @@
 
 name: eventpulse
 
+x-postgres-cpus: &postgres-cpus "1,7,2,8"
 x-monitoring-cpus: &monitoring-cpus "5,11"
 
 services:
@@ -57,7 +59,8 @@ services:
     
   renderer:
     image: grafana/grafana-image-renderer:latest
-    container_name: ep-grafana-renderer
+    container_name: ep-grafana-renderer  
+    cpuset: *monitoring-cpus
     environment:
       AUTH_TOKEN: ${GRAFANA_RENDERER_TOKEN}
     restart: unless-stopped
@@ -89,7 +92,7 @@ services:
   postgres:
     image: postgres:15
     container_name: ep-postgres
-    cpuset: *monitoring-cpus
+    cpuset: *postgres-cpus
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in infra/compose/.env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/compose/.env}
