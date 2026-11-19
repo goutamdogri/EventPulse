@@ -116,6 +116,21 @@ services:
       retries: 30
     restart: unless-stopped
 
+  # B2: Postgres metrics (connections by state, commits, settings...) from the prometheus-community exporter.
+  # It holds 1 connection of Postgres' max_connections, so B2 counts it in its "usable slots" maths.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    container_name: ep-postgres-exporter
+    cpuset: *monitoring-cpus
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    ports:
+      - "9187:9187"       # for a manual check: curl localhost:9187/metrics
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   prom-data:
     name: eventpulse-prom-data
