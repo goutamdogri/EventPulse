@@ -107,6 +107,12 @@ The second trial is the one that tells me what the `over` rate for level 0 shoul
 
 (d) One case by hand: add the toxic with `curl -X POST localhost:8474/proxies/pg/toxics -d '{"name":"lat","type":"latency","stream":"downstream","attributes":{"latency":50}}'`, start the server with the proxy URL, then call `loadtests/k6/runner.sh` with `SCRIPT=stage-1/B3/script.js RATE=... DURATION=... ADDED_MS=50 API_KEY=...`. Remove it with `curl -X DELETE localhost:8474/proxies/pg/toxics/lat`.
 
+(d2) Follow-up: does k6 drop iterations because it starts virtual users too slowly? Start with 3,000 instead of 500 (the `PRE_VUS` variable is forwarded to k6 by `runner.sh`):
+
+```bash
+PRE_VUS=3000 LEVELS_MS="0 20 50" PHASES="over" REPEATS=1 PROBES=0 RESULTS_NAME=b3-prevus ./run.sh
+```
+
 (e) While it runs, in another terminal: `watch -n1 'curl -s localhost:8000/debug/stats'` and `docker stats ep-toxiproxy ep-postgres`.
 
 Results go to `loadtests/k6/stage-1/B3/results/<RESULTS_NAME>/`: `summary.tsv`, `runs.tsv` (epochs per run), `removal.tsv` (when the toxic was deleted in the recovery probes), `env.txt`, `captures/`, and the k6 lap JSONs in timestamped folders. Read the table with `python3 loadtests/k6/scripts/analyze.py table results/b3/summary.tsv`.
