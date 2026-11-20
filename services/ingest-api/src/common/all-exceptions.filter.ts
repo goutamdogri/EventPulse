@@ -25,6 +25,19 @@ function isTransientDbError(e: any): boolean {
   );
 }
 
+// B2: why did the DB call fail? Used only as a metric label.
+function dbErrorType(e: any): string {
+  const code: string | undefined = e?.code;
+  const msg = String(e?.message ?? '');
+  if (code === '53300' || /too many clients/i.test(msg))
+    return 'too_many_clients'; // Postgres refused: max_connections reached
+  if (code === '57014' || /statement timeout/i.test(msg))
+    return 'statement_timeout';
+  if (/timeout exceeded when trying to connect/i.test(msg))
+    return 'pool_timeout'; // waited longer than connectionTimeoutMillis in the pool queue
+  return 'other';
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   constructor(
@@ -49,6 +62,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
     if (isTransientDbError(err)) {
       this.m.dbErrors.inc();
+      this.m.dbErrorsByType.inc({ type: dbErrorType(err) });
       res.setHeader('Retry-After', String(this.retryAfterS));
       return res.status(503).json({
         statusCode: 503,

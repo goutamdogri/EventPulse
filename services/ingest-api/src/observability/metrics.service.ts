@@ -28,6 +28,7 @@ export class MetricsService {
   readonly eventsInserted: Counter<string>;
   readonly eventsDuplicate: Counter<string>;
   readonly dbErrors: Counter<string>;
+  readonly dbErrorsByType: Counter<string>;
   readonly poolWait: Histogram<string>;
   readonly pgQuery: Histogram<string>;
 
@@ -89,6 +90,15 @@ export class MetricsService {
       registers,
     });
 
+    // B2: same 503s as ep_db_errors_total, split by cause. ep_db_errors_total is kept unchanged.
+    // type = pool_timeout | too_many_clients | statement_timeout | other
+    this.dbErrorsByType = new Counter({
+      name: 'ep_db_errors_by_type_total',
+      help: 'DB/pool errors turned into 503, by cause.',
+      labelNames: ['type'],
+      registers,
+    });
+
     this.poolWait = new Histogram({
       name: 'ep_pg_pool_wait_seconds',
       help: 'Time waiting to acquire a pool connection.',
@@ -132,6 +142,16 @@ export class MetricsService {
       registers,
       collect() {
         this.set(pool_.waitingCount);
+      },
+    });
+
+    // B2: the configured pool size, so a panel can show total vs max
+    new Gauge({
+      name: 'ep_pg_pool_max',
+      help: 'configured pool max (PG_POOL_MAX)',
+      registers,
+      collect() {
+        this.set((pool_ as any).options?.max ?? 0);
       },
     });
 

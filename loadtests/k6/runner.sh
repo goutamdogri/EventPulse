@@ -132,7 +132,7 @@ done
 # 6. Ask for a results folder name
 # ------------------------------------------------------------
 
-# Non-interactive use (e.g. step.sh): set RESULTS_NAME in the environment.
+# Non-interactive use (e.g. run.sh): set RESULTS_NAME in the environment.
 # Interactive use is unchanged: if it is not set, you are prompted as before.
 RESULTS_NAME="${RESULTS_NAME:-}"
 if [[ -z "$RESULTS_NAME" ]]; then

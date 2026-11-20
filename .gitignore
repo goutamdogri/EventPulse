@@ -13,5 +13,8 @@ current-project-structure.txt
 *.tmp
 /tmp
 
+# build
+*.tsbuildinfo
+
 # distribution folder
 dist/
