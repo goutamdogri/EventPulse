@@ -131,6 +131,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # B3: Toxiproxy sits between ingest-api and Postgres so B3 can add latency to every query.
+  #   ingest-api -> localhost:15434 (toxiproxy) -> postgres:5432
+  # The proxy itself ("pg") is created by loadtests/k6/stage-1/B3/run.sh through the HTTP API on :8474.
+  # Other experiments ignore it (they connect straight to :5434). It shares the monitoring cores.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.13.0
+    container_name: ep-toxiproxy
+    cpuset: *monitoring-cpus
+    ports:
+      - "8474:8474"       # control API (curl localhost:8474/proxies)
+      - "15434:15434"     # the proxied Postgres port
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   prom-data:
     name: eventpulse-prom-data
