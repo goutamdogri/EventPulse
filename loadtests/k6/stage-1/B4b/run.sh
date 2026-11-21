@@ -212,7 +212,7 @@ run_k6() {   # run_k6 <rate> <duration> <testid> <phase> <counter> <tenants> <po
   ( cd "$RUNNER_DIR" && env RESULTS_ROOT="$HERE/results" RESULTS_NAME="$RESULTS_NAME" LABEL="$3" SCRIPT="$B4_SCRIPT" \
       RATE="$1" DURATION="$2" PHASE="$4" COUNTER="$5" TENANTS="$6" POOL_MAX="$7" KEY_PREFIX="$KEY_PREFIX" BASE_URL="$BASE_URL" ROUTE="/healthz" ./runner.sh )
 }
-record() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$testid" "$PHASE" "$TENANTS" "$POOL_NOW" "$SYNC" "$RATE_NOW" "$1" "$2" "$3" >>"$RUNS_TSV"; }
+record() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$testid" "$PHASE" "$TENANTS" "$POOL_NOW" "$SYNC" "$RATE_NOW" "$1" "$2" "$3" >>"$RUNS_TSV"; }
 
 # ONE run. one_run <phase> <tenants> <pool> <sync on|off> <rate> <duration> <rep>   (counter mode is always hot)
 one_run() {
