@@ -72,7 +72,7 @@ STAGE_DIR="$(dirname "$HERE")"                             # loadtests/k6/stage-
 RUNNER_DIR="$(dirname "$STAGE_DIR")"                       # loadtests/k6  (runner.sh lives here)
 REPO="$(cd "$RUNNER_DIR/../.." && pwd)"
 API_DIR="$REPO/services/ingest-api"
-ANALYZE="$RUNNER_DIR/scripts/analyze.py"                   # shared analyzer
+ANALYZE="$RUNNER_DIR/analyze.py"                   # shared analyzer
 OUT="$HERE/results/$RESULTS_NAME"
 CAP="$OUT/captures"; RUNS_TSV="$OUT/runs.tsv"; SUMMARY="$OUT/summary.tsv"; REMOVAL_TSV="$OUT/removal.tsv"
 
