@@ -286,8 +286,9 @@ summarize() {   # summarize <rows> <extra args...>
   local js; js=$(ls -t "$OUT"/*/"${testid}_1-lap.json" 2>/dev/null | head -1 || true)
   if [ -n "$js" ]; then
     python3 "$ANALYZE" row --json "$js" --testid "$testid" --phase "$PHASE" --rate "$RATE_NOW" --prefix b6 \
-      --var "sync=$SYNC" --rows "$rows" "$@" --hook "$HERE/hook.py" --out "$SUMMARY"
-    echo "   -> $(python3 "$ANALYZE" table "$SUMMARY" | tail -1 | tr -s ' ')"
+      --var "sync=$SYNC" --rows "$rows" "$@" --hook "$HERE/hook.py" --out "${SUMMARY_OUT:-$SUMMARY}" \
+      || echo "WARN: could not add the summary row of $testid (the numbers are still in its capture file); continuing" >&2
+    echo "   -> $(python3 "$ANALYZE" table "${SUMMARY_OUT:-$SUMMARY}" | tail -1 | tr -s ' ')"
   else
     echo "   !! no summary json for $testid (k6 failed before finishing?)"
   fi
@@ -350,7 +351,8 @@ crash_probe() {
   docker logs --since "${kill_iso}Z" "$PG_CONTAINER" 2>&1 | grep -E "not properly shut down|redo|automatic recovery|ready to accept|checkpoint" | head -12 >>"$CAP_FILE" || true
   record "$t0" "$(date +%s)" "$status"
   if [ "$acked" != NA ]; then echo "   acknowledged (202): $acked   rows found after recovery: $rows   lost: $(( acked - rows ))   (negative = rows whose 202 never reached k6)"; fi
-  summarize "$rows" --extra "kill_epoch=${kill_epoch%.*}" --extra "recovery_wait_s=$up_s"
+  # analyze.py refuses to mix different extra columns in one summary, so the probes have their own file.
+  SUMMARY_OUT="$OUT/summary-crash.tsv" summarize "$rows" --extra "kill_epoch=${kill_epoch%.*}" --extra "recovery_wait_s=$up_s"
 }
 
 # ---- 7. Main ----------------------------------------------------------------------
@@ -402,5 +404,6 @@ if [ "$PROBES" = 1 ]; then
   done
 fi
 
-echo; python3 "$ANALYZE" table "$SUMMARY"
+echo; [ -f "$SUMMARY" ] && python3 "$ANALYZE" table "$SUMMARY"
+[ -f "$OUT/summary-crash.tsv" ] && { echo; echo "crash probes (lost = acknowledged - rows, in the audit column):"; python3 "$ANALYZE" table "$OUT/summary-crash.tsv"; }
 echo; echo "Done. Zoom Grafana to the times in $RUNS_TSV (epoch seconds). Summary: $SUMMARY  captures: $CAP  env: $OUT/env.txt"

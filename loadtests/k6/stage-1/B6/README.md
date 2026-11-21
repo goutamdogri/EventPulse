@@ -133,7 +133,7 @@ MEASURED=0 MODES="off" CRASH_REPS=1 RESULTS_NAME=b6-trial-crash ./run.sh
 
 To watch during a run, in another terminal: `watch -n1 'docker exec ep-postgres psql -U eventpulse -d eventpulse -Atc "show synchronous_commit"'` (a new session reads the role setting) and `docker ps --filter name=ep-postgres`.
 
-Results go to `results/<RESULTS_NAME>/`: `summary.tsv` (one row per run), `runs.tsv` (epoch start/end per run, to zoom Grafana), `env.txt`, `captures/` (one text file per run: snapshots, wait events, crash details), `server.out`, and the k6 lap JSONs with a `manifest.md` per timestamp folder. `results/` is in `.gitignore`.
+Results go to `results/<RESULTS_NAME>/`: `summary.tsv` (one row per measured run), `summary-crash.tsv` (one row per crash probe; separate because the analyzer needs the same columns in one file), `runs.tsv` (epoch start/end per run, to zoom Grafana), `env.txt`, `captures/` (one text file per run: snapshots, wait events, crash details), `server.out`, and the k6 lap JSONs with a `manifest.md` per timestamp folder. `results/` is in `.gitignore`.
 
 ## 6. What this script changes on my machine
 
