@@ -1,4 +1,4 @@
-"""B3 hook for loadtests/k6/scripts/analyze.py (passed with --hook).
+"""B3 hook for loadtests/k6/analyze.py (passed with --hook).
 
 Adds two columns to every summary row:
   cap_pred_rps  prediction: pool / (h0 + latency). h0 = the hold time of one request with no added

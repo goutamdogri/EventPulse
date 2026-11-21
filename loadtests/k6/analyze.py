@@ -59,10 +59,10 @@ Level 3 - a capability every experiment could use: add a NEW OPTIONAL flag or su
     run of one summary.tsv must use the same columns: row refuses to append if the header differs.
 
 Typical call from a run.sh:
-    python3 loadtests/k6/scripts/analyze.py row --json "$lap_json" --testid "$testid" \
+    python3 loadtests/k6/analyze.py row --json "$lap_json" --testid "$testid" \
         --phase measured --rate "$RATE" --prefix b3 --var latency_ms=50 --rows "$rows" \
         --extra "err_types=$err_types" --out "$OUT/summary.tsv"
-    python3 loadtests/k6/scripts/analyze.py table "$OUT/summary.tsv"
+    python3 loadtests/k6/analyze.py table "$OUT/summary.tsv"
 
 NOTES
 -----
@@ -78,7 +78,9 @@ import os
 import sys
 
 DEFAULT_P99_LIMIT_MS = 1000.0  # "collapsed": p99 above 1 s
-DEFAULT_ERR_LIMIT_PCT = 1.0  # ... or more than 1 % of requests not answered with the OK code
+DEFAULT_ERR_LIMIT_PCT = (
+    1.0  # ... or more than 1 % of requests not answered with the OK code
+)
 
 
 def val(metric, *keys):
@@ -160,7 +162,9 @@ def build_row(a):
         why.append(f"err>{a.err_limit_pct:g}%")
     judge = p99 if p99 is not None else p95  # fall back to p95 if p99 is not exported
     if judge is not None and judge > a.p99_limit_ms:
-        why.append(("p99" if p99 is not None else "p95") + f">{a.p99_limit_ms / 1000:g}s")
+        why.append(
+            ("p99" if p99 is not None else "p95") + f">{a.p99_limit_ms / 1000:g}s"
+        )
     if audit.startswith("LOST"):
         why.append("LOST-ROWS")
     verdict = "OK" if not why else "COLLAPSED:" + ",".join(why)
@@ -178,16 +182,46 @@ def build_row(a):
     cols = (
         ["testid", "phase"]
         + [k for k, _ in vars_]
-        + ["rate", "achieved_rps", "accepted_rps", "reqs", f"n{ok}", f"n{fail}", "n_other", "err_pct",
-           "p50_ms", "p95_ms", "p99_ms", "max_ms", "dropped", "rows", "audit"]
+        + [
+            "rate",
+            "achieved_rps",
+            "accepted_rps",
+            "reqs",
+            f"n{ok}",
+            f"n{fail}",
+            "n_other",
+            "err_pct",
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "max_ms",
+            "dropped",
+            "rows",
+            "audit",
+        ]
         + [k for k, _ in extras]
         + ["verdict"]
     )
     values = (
         [a.testid, a.phase]
         + [v for _, v in vars_]
-        + [a.rate, f"{rps:.0f}", f"{accepted:.0f}", int(reqs), int(n_ok), int(n_fail), int(other), f"{err:.2f}",
-           f1(p50), f1(p95), f1(p99), f1(mx), int(dropped), rows, audit]
+        + [
+            a.rate,
+            f"{rps:.0f}",
+            f"{accepted:.0f}",
+            int(reqs),
+            int(n_ok),
+            int(n_fail),
+            int(other),
+            f"{err:.2f}",
+            f1(p50),
+            f1(p95),
+            f1(p99),
+            f1(mx),
+            int(dropped),
+            rows,
+            audit,
+        ]
         + [v for _, v in extras]
         + [verdict]
     )
@@ -203,8 +237,10 @@ def cmd_row(a):
     if os.path.exists(a.out) and os.path.getsize(a.out) > 0:
         with open(a.out) as f:
             if f.readline().rstrip("\n") != header:
-                sys.exit(f"{a.out}: existing header differs from this row's columns. "
-                         "Use the same --var/--extra/--hook/--ok-code/--fail-code for every run of one summary.")
+                sys.exit(
+                    f"{a.out}: existing header differs from this row's columns. "
+                    "Use the same --var/--extra/--hook/--ok-code/--fail-code for every run of one summary."
+                )
         mode = "a"
     else:
         mode = "w"
@@ -233,10 +269,32 @@ def header_of(path):
 def cmd_table(a):
     rows = read_rows(a.tsv)
     hdr = header_of(a.tsv)
-    vars_ = hdr[hdr.index("phase") + 1: hdr.index("rate")] if "phase" in hdr and "rate" in hdr else []
-    extras = hdr[hdr.index("audit") + 1: hdr.index("verdict")] if "audit" in hdr and "verdict" in hdr else []
-    show = ["testid"] + vars_ + ["rate", "achieved_rps", "accepted_rps", "err_pct", "p50_ms", "p99_ms",
-                                  "dropped", "audit"] + extras + ["verdict"]
+    vars_ = (
+        hdr[hdr.index("phase") + 1 : hdr.index("rate")]
+        if "phase" in hdr and "rate" in hdr
+        else []
+    )
+    extras = (
+        hdr[hdr.index("audit") + 1 : hdr.index("verdict")]
+        if "audit" in hdr and "verdict" in hdr
+        else []
+    )
+    show = (
+        ["testid"]
+        + vars_
+        + [
+            "rate",
+            "achieved_rps",
+            "accepted_rps",
+            "err_pct",
+            "p50_ms",
+            "p99_ms",
+            "dropped",
+            "audit",
+        ]
+        + extras
+        + ["verdict"]
+    )
     show = [c for c in show if c in hdr]
     widths = {c: max([len(c)] + [len(r[c]) for r in rows]) for c in show}
     print("  ".join(c.ljust(widths[c]) for c in show))
@@ -253,7 +311,11 @@ def cmd_suggest(a):
     for r in rows:
         ok.setdefault(int(r["rate"]), []).append(r["verdict"].startswith("OK"))
     knee = None
-    for rt in rates:  # highest rate before the first collapse (any run at that rate collapsing counts)
+    for (
+        rt
+    ) in (
+        rates
+    ):  # highest rate before the first collapse (any run at that rate collapsing counts)
         if all(ok[rt]):
             knee = rt
         else:
@@ -268,7 +330,9 @@ def cmd_suggest(a):
     lo = max(50, int(round(0.5 * knee / 50.0)) * 50)
     step = max(50, int(round((knee / 8.0) / 50.0)) * 50)
     fine = [lo + i * step for i in range(9)]
-    probes = sorted({int(round(0.7 * knee / 50.0) * 50) or 50, int(round(knee / 50.0) * 50) or 50})
+    probes = sorted(
+        {int(round(0.7 * knee / 50.0) * 50) or 50, int(round(knee / 50.0) * 50) or 50}
+    )
     with open(a.out, "w") as f:
         f.write(note)
         f.write(f"# last coarse rate before the first collapse: {knee}\n")
@@ -278,22 +342,40 @@ def cmd_suggest(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Shared k6 summary analyzer. Read the docstring at the top of this file.")
+    ap = argparse.ArgumentParser(
+        description="Shared k6 summary analyzer. Read the docstring at the top of this file."
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("row")
     for k in ("json", "testid", "phase", "rate"):
         r.add_argument("--" + k, required=True)
-    r.add_argument("--rows", default=None, help="rows committed by this run (omit = no audit)")
-    r.add_argument("--var", action="append", help="NAME=VALUE, the thing being compared (repeatable)")
-    r.add_argument("--extra", action="append", help="NAME=VALUE, extra column before verdict (repeatable)")
-    r.add_argument("--hook", default=None, help="python file with extra_columns() and/or verdict()")
-    r.add_argument("--prefix", default="", help="counter prefix, e.g. b3 -> b3_resp_202")
+    r.add_argument(
+        "--rows", default=None, help="rows committed by this run (omit = no audit)"
+    )
+    r.add_argument(
+        "--var",
+        action="append",
+        help="NAME=VALUE, the thing being compared (repeatable)",
+    )
+    r.add_argument(
+        "--extra",
+        action="append",
+        help="NAME=VALUE, extra column before verdict (repeatable)",
+    )
+    r.add_argument(
+        "--hook", default=None, help="python file with extra_columns() and/or verdict()"
+    )
+    r.add_argument(
+        "--prefix", default="", help="counter prefix, e.g. b3 -> b3_resp_202"
+    )
     r.add_argument("--ok-code", type=int, default=202)
     r.add_argument("--fail-code", type=int, default=503)
     r.add_argument("--p99-limit-ms", type=float, default=DEFAULT_P99_LIMIT_MS)
     r.add_argument("--err-limit-pct", type=float, default=DEFAULT_ERR_LIMIT_PCT)
-    r.add_argument("--out", default=None, help="append to this summary.tsv instead of printing")
+    r.add_argument(
+        "--out", default=None, help="append to this summary.tsv instead of printing"
+    )
     r.set_defaults(fn=cmd_row)
 
     t = sub.add_parser("table")

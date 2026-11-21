@@ -58,7 +58,7 @@ No server code was changed for B3.
 - postgres-exporter metrics: `pg_stat_activity_count`, `pg_stat_database_xact_commit`.
 - Other: `ep_pg_container_cpu_seconds_total` (from `infra/scripts/pg-container-exporter.sh`, started by `run.sh`), `node_cpu_seconds_total`, `node_disk_io_time_seconds_total`.
 - Infrastructure ADDED BY B3: the `toxiproxy` service in `infra/compose/docker-compose.yml` (image `ghcr.io/shopify/toxiproxy:2.13.0`, ports 8474 and 15434, cpuset `5,11`).
-- Analysis: the shared `loadtests/k6/scripts/analyze.py` (docs at the top of that file) with the B3 hook `hook.py` (columns `cap_pred_rps`, `little_L`). B1 and B2 still use their own `analyze.py`.
+- Analysis: the shared `loadtests/k6/analyze.py` (docs at the top of that file) with the B3 hook `hook.py` (columns `cap_pred_rps`, `little_L`). B1 and B2 still use their own `analyze.py`.
 
 ## 4. Grafana panels
 
@@ -115,7 +115,7 @@ PRE_VUS=3000 LEVELS_MS="0 20 50" PHASES="over" REPEATS=1 PROBES=0 RESULTS_NAME=b
 
 (e) While it runs, in another terminal: `watch -n1 'curl -s localhost:8000/debug/stats'` and `docker stats ep-toxiproxy ep-postgres`.
 
-Results go to `loadtests/k6/stage-1/B3/results/<RESULTS_NAME>/`: `summary.tsv`, `runs.tsv` (epochs per run), `removal.tsv` (when the toxic was deleted in the recovery probes), `env.txt`, `captures/`, and the k6 lap JSONs in timestamped folders. Read the table with `python3 loadtests/k6/scripts/analyze.py table results/b3/summary.tsv`.
+Results go to `loadtests/k6/stage-1/B3/results/<RESULTS_NAME>/`: `summary.tsv`, `runs.tsv` (epochs per run), `removal.tsv` (when the toxic was deleted in the recovery probes), `env.txt`, `captures/`, and the k6 lap JSONs in timestamped folders. Read the table with `python3 loadtests/k6/analyze.py table results/b3/summary.tsv`.
 
 ## 6. What this script changes on my machine
 
