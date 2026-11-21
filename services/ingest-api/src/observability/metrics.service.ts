@@ -31,6 +31,7 @@ export class MetricsService {
   readonly dbErrorsByType: Counter<string>;
   readonly poolWait: Histogram<string>;
   readonly pgQuery: Histogram<string>;
+  readonly counterUpdate: Histogram<string>;
 
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {
     const registers = [this.registry];
@@ -113,6 +114,16 @@ export class MetricsService {
       help: 'INSERT execution time on an acquired connection.',
       buckets: [
         0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5,
+      ],
+      registers,
+    });
+
+    // B4: the per-tenant counter UPDATE (includes the wait for the row lock). No tenant label on purpose.
+    this.counterUpdate = new Histogram({
+      name: 'ep_pg_counter_update_seconds',
+      help: 'Time of UPDATE tenant_counters (COUNTER_MODE=hot), including the row-lock wait.',
+      buckets: [
+        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
       ],
       registers,
     });

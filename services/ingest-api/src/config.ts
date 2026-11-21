@@ -12,6 +12,7 @@ export interface AppConfig {
   bodyLimit: string;
   logEnabled: boolean;
   retryAfterS: number;
+  counterMode: 'off' | 'hot';   // B4: 'hot' = also UPDATE tenant_counters in the same transaction
 }
 
 const num = (k: string, d: number): number => {
@@ -20,6 +21,12 @@ const num = (k: string, d: number): number => {
   const n = Number(v);
   if (!Number.isFinite(n)) throw new Error(`${k} must be a number`);
   return n;
+};
+
+const counterMode = (): 'off' | 'hot' => {
+  const v = process.env.COUNTER_MODE ?? 'off';
+  if (v !== 'off' && v !== 'hot') throw new Error('COUNTER_MODE must be off or hot');
+  return v;
 };
 
 // Called from a provider factory (not at import time) so tests can set env first.
@@ -45,6 +52,7 @@ export function loadConfig(): AppConfig {
     bodyLimit: process.env.BODY_LIMIT ?? '64kb',
     logEnabled: process.env.LOG_ENABLED === 'true',
     retryAfterS: num('RETRY_AFTER_S', 1),
+    counterMode: counterMode(),
   };
 }
 
