@@ -247,6 +247,9 @@ export class MetricsService {
         total: this.pool.totalCount,
         idle: this.pool.idleCount,
         waiting: this.pool.waitingCount,
+        // B10: the deadlines the pool really runs with (0 = no deadline). run.sh checks these after every restart.
+        conn_timeout_ms: (this.pool as any).options?.connectionTimeoutMillis ?? 0,
+        statement_timeout_ms: (this.pool as any).options?.statement_timeout ?? 0,
       },
       // Note: this histogram is reset on every Prometheus scrape, so these are "since last scrape".
       event_loop_delay_ms: {
