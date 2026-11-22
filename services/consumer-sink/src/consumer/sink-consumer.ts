@@ -9,7 +9,6 @@ import type { Pool } from 'pg';
 import {
   KafkaJS,
   RdKafkaErrors,
-  TOPIC_EVENTS_RAW,
   createKafka,
 } from '@eventpulse/kafka-config';
 import type { Consumer } from '@eventpulse/kafka-config';
@@ -19,6 +18,7 @@ import { PG_POOL } from '../db/db.module.js';
 import { SinkStats } from '../observability/sink-stats.js';
 import { BatchWriter } from '../sink/batch-writer.js';
 import { handleBatch } from './batch-handler.js';
+import { FaultInjector } from './fault-injector.js';
 
 const ASSIGNORS = {
   roundRobin: KafkaJS.PartitionAssigners.roundRobin,
@@ -41,6 +41,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly log = new Logger(SinkConsumer.name);
   private readonly consumer: Consumer;
   private readonly writer: BatchWriter;
+  private readonly faults: FaultInjector;
   private assignedOnce!: Promise<void>;
   private markAssigned!: () => void;
   private running = false;
@@ -51,6 +52,10 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     readonly stats: SinkStats,
   ) {
     this.writer = new BatchWriter(pool);
+    this.faults = new FaultInjector(cfg.faults);
+    if (cfg.faults.crashAt !== 'none') {
+      this.log.warn(`DEBUG FAULT ARMED: SIGKILL at ${cfg.faults.crashAt} on batch ${cfg.faults.crashAfterBatches}`);
+    }
     this.assignedOnce = new Promise((r) => (this.markAssigned = r));
     const c = cfg.consumer;
     this.consumer = createKafka(cfg.kafka).consumer({
@@ -75,7 +80,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
 
   async onApplicationBootstrap() {
     await this.consumer.connect();
-    await this.consumer.subscribe({ topics: [TOPIC_EVENTS_RAW] });
+    await this.consumer.subscribe({ topics: [this.cfg.consumer.topic] });
     await this.consumer.run({
       eachBatchAutoResolve: false,
       partitionsConsumedConcurrently: this.cfg.consumer.partitionsConcurrently,
@@ -93,8 +98,17 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               })),
               resolveOffset: (offset) => payload.resolveOffset(offset),
               commitOffsetsIfNecessary: () => payload.commitOffsetsIfNecessary(),
+              heartbeat: () => payload.heartbeat(),
+              isRunning: () => payload.isRunning(),
+              isStale: () => payload.isStale(),
             },
-            { writer: this.writer, stats: this.stats, maxRows: this.cfg.sink.maxRows },
+            {
+              writer: this.writer,
+              stats: this.stats,
+              maxRows: this.cfg.sink.maxRows,
+              faults: this.faults,
+              processingDelayMs: this.cfg.sink.processingDelayMs,
+            },
           );
         } catch (e) {
           this.stats.batchErrors++;
@@ -104,7 +118,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
       },
     });
     this.running = true;
-    this.log.log(`joined group ${this.cfg.consumer.groupId}, subscribed to ${TOPIC_EVENTS_RAW}`);
+    this.log.log(`joined group ${this.cfg.consumer.groupId}, subscribed to ${this.cfg.consumer.topic}`);
   }
 
   /** Resolves when this member received its first partition assignment (used by tests). */

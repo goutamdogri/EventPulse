@@ -1,12 +1,15 @@
 import { Global, Module } from '@nestjs/common';
 import {
   GROUP_SINK_POSTGRES,
+  TOPIC_EVENTS_RAW,
   envBool,
   envEnum,
   envInt,
   loadKafkaClientConfig,
 } from '@eventpulse/kafka-config';
 import type { KafkaClientConfig } from '@eventpulse/kafka-config';
+import { CRASH_POINTS } from './consumer/fault-injector.js';
+import type { FaultConfig } from './consumer/fault-injector.js';
 
 export const CONFIG = Symbol('CONFIG');
 
@@ -15,6 +18,8 @@ export type Assignor = (typeof ASSIGNORS)[number];
 
 export interface ConsumerConfig {
   groupId: string;
+  /** events.raw unless overridden (CONSUMER_TOPIC); tests use a throw-away topic per run. */
+  topic: string;
   /** true = 'earliest' when the group has no committed offset (a new group does not skip data). */
   fromBeginning: boolean;
   sessionTimeoutMs: number;
@@ -39,7 +44,8 @@ export interface AppConfig {
   pgStatementTimeoutMs: number;
   kafka: KafkaClientConfig;
   consumer: ConsumerConfig;
-  sink: { maxRows: number };
+  sink: { maxRows: number; processingDelayMs: number };
+  faults: FaultConfig;
 }
 
 // Called from a provider factory (not at import time) so tests can set env first.
@@ -49,6 +55,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   const consumer: ConsumerConfig = {
     groupId: env.CONSUMER_GROUP_ID || GROUP_SINK_POSTGRES,
+    topic: env.CONSUMER_TOPIC || TOPIC_EVENTS_RAW,
     fromBeginning: envBool(env, 'CONSUMER_FROM_BEGINNING', true),
     sessionTimeoutMs: envInt(env, 'CONSUMER_SESSION_TIMEOUT_MS', 45_000, 1),
     heartbeatIntervalMs: envInt(env, 'CONSUMER_HEARTBEAT_INTERVAL_MS', 3_000, 1),
@@ -70,6 +77,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error('CONSUMER_PARTITIONS_CONCURRENTLY must be <= PG_POOL_MAX');
   }
 
+  const faults: FaultConfig = {
+    crashAt: envEnum(env, 'CRASH_AT', CRASH_POINTS, 'none'),
+    crashAfterBatches: envInt(env, 'CRASH_AFTER_BATCHES', 1, 1),
+  };
+  if (faults.crashAt !== 'none' && !envBool(env, 'DEBUG_FAULTS', false)) {
+    throw new Error(`CRASH_AT=${faults.crashAt} needs DEBUG_FAULTS=true (crash points are debug-only)`);
+  }
+
   return {
     port: envInt(env, 'METRICS_PORT', 8001, 0),
     databaseUrl,
@@ -78,7 +93,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     pgStatementTimeoutMs: envInt(env, 'PG_STATEMENT_TIMEOUT_MS', 10_000, 0),
     kafka: loadKafkaClientConfig(env, 'consumer-sink'),
     consumer,
-    sink: { maxRows: envInt(env, 'SINK_MAX_ROWS', 1000, 1) },
+    sink: {
+      maxRows: envInt(env, 'SINK_MAX_ROWS', 1000, 1),
+      processingDelayMs: envInt(env, 'SINK_PROCESSING_DELAY_MS', 0, 0),
+    },
+    faults,
   };
 }
 

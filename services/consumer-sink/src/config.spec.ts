@@ -17,6 +17,21 @@ describe('loadConfig', () => {
     expect(c.port).toBe(8002);
   });
 
+  it('crash points are off by default and need DEBUG_FAULTS', () => {
+    expect(loadConfig(base).faults).toEqual({ crashAt: 'none', crashAfterBatches: 1 });
+    expect(() => loadConfig({ ...base, CRASH_AT: 'after_db_commit' })).toThrow(/DEBUG_FAULTS/);
+    expect(loadConfig({ ...base, CRASH_AT: 'after_db_commit', CRASH_AFTER_BATCHES: '3', DEBUG_FAULTS: 'true' }).faults)
+      .toEqual({ crashAt: 'after_db_commit', crashAfterBatches: 3 });
+    expect(() => loadConfig({ ...base, CRASH_AT: 'somewhere', DEBUG_FAULTS: 'true' })).toThrow();
+  });
+
+  it('topic and processing delay overrides', () => {
+    expect(loadConfig(base).consumer.topic).toBe('events.raw');
+    const c = loadConfig({ ...base, CONSUMER_TOPIC: 't1', SINK_PROCESSING_DELAY_MS: '200' });
+    expect(c.consumer.topic).toBe('t1');
+    expect(c.sink.processingDelayMs).toBe(200);
+  });
+
   it('requires DATABASE_URL', () => expect(() => loadConfig({})).toThrow(/DATABASE_URL/));
 
   it('refuses more concurrent partitions than pool connections', () =>

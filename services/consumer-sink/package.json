@@ -16,7 +16,7 @@
     "pretest": "pnpm --filter @eventpulse/kafka-config build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pretest:e2e": "pnpm --filter @eventpulse/kafka-config build",
+    "pretest:e2e": "pnpm build",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "migrate": "dotenv run -f .env -- node-pg-migrate -m ../../db/migrations -j sql",
     "migrate:up": "pnpm migrate up",

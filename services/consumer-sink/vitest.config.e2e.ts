@@ -8,7 +8,7 @@ export default defineConfig({
     include: ['**/*.e2e-spec.ts'],
     setupFiles: ['./test/setup-env.ts'],
     fileParallelism: false, // the e2e files share Kafka and Postgres
-    testTimeout: 60_000,
-    hookTimeout: 60_000,
+    testTimeout: 180_000,
+    hookTimeout: 120_000,
   },
 });

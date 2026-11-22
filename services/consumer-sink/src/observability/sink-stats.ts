@@ -9,6 +9,10 @@ export class SinkStats {
   batches = 0;
   chunks = 0;
   batchErrors = 0;
+  commits = 0; // successful offset commits (one per chunk)
+  commitErrors = 0;
+  lastCommitMs?: number;
+  stoppedEarly = 0; // batches cut short by shutdown or a revoked partition
   rebalances = 0;
   lastBatchAt?: number;
   lastError?: { at: string; message: string };
@@ -30,6 +34,10 @@ export class SinkStats {
       batches: this.batches,
       chunks: this.chunks,
       batch_errors: this.batchErrors,
+      commits: this.commits,
+      commit_errors: this.commitErrors,
+      last_commit_ms: this.lastCommitMs ?? null,
+      stopped_early: this.stoppedEarly,
       rebalances: this.rebalances,
       last_batch_at: this.lastBatchAt ? new Date(this.lastBatchAt).toISOString() : null,
       last_error: this.lastError ?? null,
