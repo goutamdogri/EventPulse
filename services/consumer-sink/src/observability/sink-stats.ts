@@ -21,7 +21,9 @@ export class SinkStats {
   dlqErrors = 0; // failed DLQ publishes (chunk retried)
   isolations = 0; // chunks split to find the bad rows
   pauses = 0; // partition pauses because the DB was down
-  readonly errorsByClass: Partial<Record<ErrorClass, number>> = {}; // failed records (parse) / failed writes (DB)
+  // PERMANENT_PARSE / PERMANENT_DB / UNKNOWN: one per bad record (counted once, when dead-lettered or blocked).
+  // TRANSIENT_DB / SYSTEMIC_DB: one per failed write attempt of a chunk (the DB was down, no record is at fault).
+  readonly errorsByClass: Partial<Record<ErrorClass, number>> = {};
   readonly retriesByClass: Partial<Record<ErrorClass, number>> = {};
   readonly dlqByClass: Partial<Record<ErrorClass, number>> = {};
   readonly paused = new Set<string>(); // "topic:partition" currently paused

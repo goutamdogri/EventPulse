@@ -16,12 +16,13 @@
     "pretest": "pnpm --filter @eventpulse/kafka-config build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pretest:e2e": "pnpm build",
+    "pretest:e2e": "pnpm --filter @eventpulse/ingest-api build && pnpm build",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "migrate": "dotenv run -f .env -- node-pg-migrate -m ../../db/migrations -j sql",
     "migrate:up": "pnpm migrate up",
     "migrate:down": "pnpm migrate down 1",
-    "migrate:new": "pnpm migrate create"
+    "migrate:new": "pnpm migrate create",
+    "migrate:test": "dotenv run -f .env.test -- node-pg-migrate -m ../../db/migrations -j sql up"
   },
   "dependencies": {
     "@confluentinc/kafka-javascript": "1.11.0",

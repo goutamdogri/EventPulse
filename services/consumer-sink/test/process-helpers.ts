@@ -6,7 +6,7 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
-import { createKafka, encodeEvent, loadKafkaClientConfig } from '@eventpulse/kafka-config';
+import { createKafka, encodeEvent, loadKafkaClientConfig, waitTopicReady } from '@eventpulse/kafka-config';
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -33,11 +33,7 @@ export async function withAdmin<T>(fn: (admin: ReturnType<ReturnType<typeof kafk
 
 export async function createTopic(partitions = 6): Promise<string> {
   const topic = `sink-e2e-${randomUUID()}`;
-  await withAdmin((a) =>
-    a.createTopics({
-      topics: [{ topic, numPartitions: partitions, replicationFactor: 3, configEntries: [{ name: 'min.insync.replicas', value: '2' }] }],
-    }),
-  );
+  await createTopicNamed(topic, partitions);
   return topic;
 }
 
@@ -101,6 +97,10 @@ export const totalCommitted = async (groupId: string, topic: string) =>
 
 export class Db {
   readonly pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
+  constructor() {
+    // Idle clients die when a test stops Postgres; without a handler that would crash the test process.
+    this.pool.on('error', () => undefined);
+  }
   async countRows(ids: string[]): Promise<number> {
     return Number((await this.pool.query('select count(*) from events where event_id = any($1::uuid[])', [ids])).rows[0].count);
   }
@@ -171,12 +171,14 @@ export function databaseUrlViaProxy(): string {
   return u.toString();
 }
 
+/** Create a topic and wait until it is safe to produce to (leaders + full ISR + settle, see waitTopicReady). */
 export const createTopicNamed = (topic: string, partitions: number) =>
-  withAdmin((a) =>
-    a.createTopics({
+  withAdmin(async (a) => {
+    await a.createTopics({
       topics: [{ topic, numPartitions: partitions, replicationFactor: 3, configEntries: [{ name: 'min.insync.replicas', value: '2' }] }],
-    }),
-  ).then(() => topic);
+    });
+    await waitTopicReady(a, topic, partitions);
+  }).then(() => topic);
 
 /** scripts/produce-poison.sh --kind KIND --key KEY --topic TOPIC (runs the console producer in ep-kafka1). */
 export async function producePoison(kind: string, key: string, topic: string): Promise<void> {
@@ -211,4 +213,18 @@ export async function readTopic(topic: string, timeoutMs: number, until: (r: Top
   } finally {
     await consumer.disconnect();
   }
+}
+
+// --- The real Postgres container (ep-postgres) ------------------------------------------------------------------
+const PG_CONTAINER = process.env.PG_CONTAINER ?? 'ep-postgres';
+export const dockerPg = (action: 'stop' | 'start') => promisify(execFile)('docker', [action, PG_CONTAINER]);
+export async function waitPgReady(timeoutMs = 60_000) {
+  await waitFor(async () => {
+    try {
+      await promisify(execFile)('docker', ['exec', PG_CONTAINER, 'pg_isready', '-q']);
+      return true;
+    } catch {
+      return false;
+    }
+  }, timeoutMs, `${PG_CONTAINER} to accept connections`);
 }

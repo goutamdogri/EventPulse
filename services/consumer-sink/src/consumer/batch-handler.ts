@@ -16,7 +16,8 @@
 //                                        crash point: after_db_commit
 //       publish dead letters to the DLQ and wait for the ack (failure -> throw, nothing resolved)
 //       stop if the partition was revoked meanwhile
-//       resolveOffset(last offset of the chunk) + commit offsets to Kafka
+//       resolveOffset(last offset of the chunk) + commit offsets to Kafka (a failed commit is retried
+//                                        COMMIT_RETRIES times; the rows are stored, so a retry is always safe)
 //
 // This is the ONLY place that resolves or commits offsets in this service.
 // With SINK_DLQ_ENABLED=false the old S2-F2/F3 behavior returns: a poison record throws and blocks its partition.
@@ -172,16 +173,33 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
 
     ctx.resolveOffset(part[part.length - 1].offset);
     const t0 = performance.now();
-    try {
-      await ctx.commitOffsetsIfNecessary();
-    } catch (e) {
-      stats.commitErrors++;
-      throw new OffsetCommitError(e);
-    }
+    await commitWithRetry(ctx, deps);
     stats.commits++;
     stats.lastCommitMs = performance.now() - t0;
     stats.lastBatchAt = Date.now();
     await ctx.heartbeat();
+  }
+}
+
+/** Commit attempts for one chunk before giving up (1 + this many retries). */
+export const COMMIT_RETRIES = 3;
+
+/**
+ * Commit the stored offsets. The rows are already in Postgres, so retrying the commit is always safe.
+ * Without the retry, a commit that fails on a partition's LAST chunk stays stored-but-uncommitted until another
+ * chunk of that partition commits; if none comes, lag never reaches 0 and a restart reprocesses the chunk.
+ */
+async function commitWithRetry(ctx: BatchContext, deps: HandlerDeps): Promise<void> {
+  const sleep = deps.sleep ?? defaultSleep;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await ctx.commitOffsetsIfNecessary();
+      return;
+    } catch (e) {
+      deps.stats.commitErrors++;
+      if (attempt >= COMMIT_RETRIES || !ctx.isRunning() || ctx.isStale()) throw new OffsetCommitError(e);
+      await sleep(backoffMs(attempt + 1, deps.retry.baseMs, deps.retry.maxMs, deps.rand));
+    }
   }
 }
 
@@ -244,7 +262,7 @@ async function writeIsolating(
   } catch (e) {
     const cls = classifyDbError(e);
     if (isBlocking(cls)) throw e;
-    deps.stats.countError(cls);
+    // Not counted in errors_by_class here: a bad row is counted once, when it is finally dead-lettered.
     if (depth === 0) deps.stats.isolations++;
     if (rows.length > 1) {
       const mid = rows.length >> 1;
@@ -274,11 +292,11 @@ async function retryOneRow(
     } catch (e) {
       const cls = classifyDbError(e);
       if (isBlocking(cls)) throw e;
-      deps.stats.countError(cls);
       lastError = e;
       lastClass = cls;
     }
   }
+  deps.stats.countError(lastClass); // one bad record = one error (retries are in retries_by_class)
   return {
     attempted: 0,
     inserted: 0,

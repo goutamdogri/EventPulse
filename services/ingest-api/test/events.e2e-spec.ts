@@ -1,4 +1,5 @@
 // S2-F1 end to end against the real 3-broker cluster (infra/compose/docker-compose.kafka.yml must be up).
+// Writes to a throw-away topic (test/global-setup.ts), never to events.raw.
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { randomUUID } from 'node:crypto';
@@ -21,7 +22,7 @@ const ev = (o: any = {}) => ({
   ...o,
 });
 
-describe('POST /v1/events -> events.raw', () => {
+describe('POST /v1/events -> Kafka', () => {
   let app: NestExpressApplication;
   const post = (body: object, key = 'key_a') =>
     request(app.getHttpServer())

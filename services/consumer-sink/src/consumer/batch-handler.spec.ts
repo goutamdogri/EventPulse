@@ -161,13 +161,37 @@ describe('handleBatch: offsets committed only after the DB commit', () => {
     expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(1);
   });
 
-  it('Kafka commit fails after a successful write: OffsetCommitError, counted, rows stay stored', async () => {
+  it('Kafka commit fails on every attempt: OffsetCommitError after 1 + 3 attempts, counted, rows stay stored', async () => {
     const s = setup();
     const c = s.ctx(msgs(2));
-    c.commitOffsetsIfNecessary.mockRejectedValueOnce(new Error('REBALANCE_IN_PROGRESS'));
+    c.commitOffsetsIfNecessary.mockRejectedValue(new Error('REBALANCE_IN_PROGRESS'));
     await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(OffsetCommitError);
-    expect(s.stats.commitErrors).toBe(1);
+    expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(4);
+    expect(s.stats.commitErrors).toBe(4);
     expect(s.stats.inserted).toBe(2); // nothing "un-done"
+  });
+
+  it('Kafka commit fails twice then succeeds: retried with backoff, no error, chunk committed', async () => {
+    const s = setup();
+    const c = s.ctx(msgs(2));
+    c.commitOffsetsIfNecessary
+      .mockRejectedValueOnce(new Error('COORDINATOR_LOAD_IN_PROGRESS'))
+      .mockRejectedValueOnce(new Error('COORDINATOR_LOAD_IN_PROGRESS'));
+    await handleBatch(c, s.deps);
+    expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(3);
+    expect(s.sleeps).toEqual([100, 200]);
+    expect(s.stats).toMatchObject({ commitErrors: 2, commits: 1 });
+  });
+
+  it('commit retry stops at once if the partition was revoked meanwhile', async () => {
+    const s = setup();
+    const c = s.ctx(msgs(2));
+    c.commitOffsetsIfNecessary.mockImplementation(async () => {
+      s.revoke();
+      throw new Error('ILLEGAL_GENERATION');
+    });
+    await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(OffsetCommitError);
+    expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(1);
   });
 
   it('DLQ off: poison in chunk 2 -> chunk 1 committed, the batch then throws at the poison chunk', async () => {
@@ -259,6 +283,7 @@ describe('S2-F4 poison handling', () => {
     const s = setup({ maxRows: 1000 });
     await handleBatch(s.ctx([poison(), ...msgs(3), poison(), poison()]), s.deps);
     expect(s.dead).toHaveLength(3);
+    expect(s.stats.errorsByClass).toEqual({ PERMANENT_PARSE: 3 });
     expect(s.stats.inserted).toBe(3);
   });
 
@@ -282,6 +307,8 @@ describe('S2-F4 poison handling', () => {
     expect(s.sleeps).toEqual([100, 200, 400]); // backoff between the retries of the bad row
     expect(c.resolveOffset).toHaveBeenCalledWith(ms[7].offset);
     expect(s.stats.isolations).toBe(1);
+    // One bad record = one error, however many sub-writes failed during the bisection (8 -> 4 -> 2 -> 1).
+    expect(s.stats.errorsByClass).toEqual({ PERMANENT_DB: 1 });
   });
 
   it('a row that fails once then succeeds on retry is stored, not dead-lettered', async () => {

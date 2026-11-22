@@ -43,6 +43,8 @@ Note: `pnpm-workspace.yaml` already includes `packages/*` and `services/*`, so `
 - No unbounded queue anywhere: batcher, consumer prefetch, retry loops, DLQ buffer.
 - Every new metric gets a Prometheus series **and** a field in `/debug/stats` (step 6 completes this, but name metrics consistently from step 1: prefix `ep_`).
 - Record container CPU/memory limits in the compose files. The Stage 2 report needs them.
+- **Tests never touch dev data:** e2e tests use the separate `eventpulse_test` database (the setup refuses any database whose name lacks `test`) and throw-away Kafka topics, never `events.raw` or the `sink-postgres` group. See `notebook/fix/step-2.md`.
+- **A topic created on the fly (tests) is only used after `waitTopicReady()`** (every partition has a leader and a full ISR, plus a 2 s settle). Producing into a topic in its first moments lost acknowledged records with the idempotent producer; see `notebook/fix/step-1.md` 1.4.
 
 ---
 
@@ -60,7 +62,7 @@ Note: `pnpm-workspace.yaml` already includes `packages/*` and `services/*`, so `
   - `EXTERNAL://:9092` / `:9094` / `:9096`, advertised as `localhost:9092`, `localhost:9094`, `localhost:9096` (host clients).
   - `CONTROLLER://:9093` for the KRaft quorum.
   - `KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL`, a `LISTENER_SECURITY_PROTOCOL_MAP` covering all three.
-  - Write down in `notebook/kafka-notes.md` what you had to change and why. The PRD calls this out as a learning exercise.
+  - Write down in `notebook/stage-2/learning/Kafka/listeners.md` what you had to change and why. The PRD calls this out as a learning exercise.
 - Cluster defaults: `default.replication.factor=3`, `min.insync.replicas=2`, `offsets.topic.replication.factor=3`, `transaction.state.log.replication.factor=3`, `transaction.state.log.min.isr=2`, `auto.create.topics.enable=false` (so typos fail loudly instead of making 1-partition topics).
 - Explicit `cpus`/`cpuset` + `mem_limit` per broker, plus a `KAFKA_HEAP_OPTS` that fits inside the limit. Pick cores that don't overlap the API/k6/Postgres cpusets already in `infra/compose/docker-compose.yml`.
 - Named volumes per broker (so `docker kill` + restart keeps the log).
@@ -330,7 +332,7 @@ Rules this enforces:
 ### 4.1 Part 1: observe the problem first (required by the PRD)
 
 1. Add `scripts/produce-poison.sh`: writes one bad record straight into `events.raw` (bypassing the API) using the Kafka console producer inside a broker container (or `kcat`). Options: `--kind invalid-json|bad-uuid|oversized-field|constraint`, `--partition N` or `--key tenant_x` to target a busy partition.
-2. With the step 3 consumer (bad message throws out of `eachBatch`), run a steady load, inject one poison record, and record in `notebook/stage-2-poison.md`: the consumer retries/crash-loops forever, lag grows on that one partition only, other partitions keep draining. Save `kafka-consumer-groups.sh --describe` output before/after. Commit this note **before** the fix.
+2. With the step 3 consumer (bad message throws out of `eachBatch`), run a steady load, inject one poison record, and record in `notebook/stage-2/s2-f4-poison-before-fix.md`: the consumer retries/crash-loops forever, lag grows on that one partition only, other partitions keep draining. Save `kafka-consumer-groups.sh --describe` output before/after. Commit this note **before** the fix.
 
 ### 4.2 What to build (the fix)
 
@@ -341,6 +343,7 @@ Rules this enforces:
 | `PERMANENT_PARSE` | invalid JSON, bad UUID, bad timestamp, missing tenant/header, oversized field caught by parser | send straight to DLQ, no retry |
 | `PERMANENT_DB` | Postgres `22xxx` data exceptions (e.g. `22P02` invalid text, `22001` value too long), `23xxx` constraint violations other than the handled PK conflict | isolate the row, retry it `SINK_MAX_RETRIES` times, then DLQ |
 | `TRANSIENT_DB` | connection refused/reset, `08xxx`, `53xxx`, `57P01`, pool timeout, statement timeout | **never** DLQ; retry with backoff and pause the partition until the DB is back |
+| `SYSTEMIC_DB` | every row would fail: `42xxx` (e.g. missing column), `28xxx`, `3D000`, `0A`, `XX` | **never** DLQ (it would dead-letter the whole topic); handled like `TRANSIENT_DB` until a human fixes it. *Added during implementation, see `notebook/fix/step-4.md`* |
 | `UNKNOWN` | anything else | treat like `PERMANENT_DB` (bounded retries, then DLQ) |
 
 Reuse the SQLSTATE / Node error-code logic from `ingest-api/src/common/all-exceptions.filter.ts` (move the shared bits into a small util).

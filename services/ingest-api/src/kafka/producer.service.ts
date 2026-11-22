@@ -1,5 +1,5 @@
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
-import { KafkaJS, TOPIC_EVENTS_RAW, createKafka } from '@eventpulse/kafka-config';
+import { KafkaJS, createKafka } from '@eventpulse/kafka-config';
 import type { Producer } from '@eventpulse/kafka-config';
 import { CONFIG } from '../config.js';
 import type { AppConfig } from '../config.js';
@@ -47,7 +47,7 @@ export class ProducerService implements OnModuleInit, OnApplicationShutdown {
 
   /** Called by the batcher. Resolves only when every message is acknowledged under the configured acks. */
   send = async (messages: BatchMessage[]): Promise<void> => {
-    await this.producer.send({ topic: TOPIC_EVENTS_RAW, messages });
+    await this.producer.send({ topic: this.cfg.topic, messages });
   };
 
   isConnected() {
@@ -56,7 +56,7 @@ export class ProducerService implements OnModuleInit, OnApplicationShutdown {
 
   /** Effective producer settings, for /debug/stats and experiment records. */
   settings() {
-    return { topic: TOPIC_EVENTS_RAW, ...this.cfg.producer, brokers: this.cfg.kafka.brokers };
+    return { topic: this.cfg.topic, ...this.cfg.producer, brokers: this.cfg.kafka.brokers };
   }
 
   // Runs after BatcherService.beforeApplicationShutdown has drained the queue.

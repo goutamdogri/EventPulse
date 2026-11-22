@@ -56,7 +56,7 @@ Other failures:
 | Failure | What happens |
 | --- | --- |
 | DB write fails (Postgres down, timeout) | nothing resolved, the client seeks back, the chunk is retried: no loss, no offset moves while the DB is down |
-| Kafka offset commit fails after the DB commit | `OffsetCommitError` (counted as `commit_errors`). Rows are stored; the offset is committed with a later chunk, or the next owner reprocesses the chunk: duplicates, never loss |
+| Kafka offset commit fails after the DB commit | retried 3 times with backoff (rows are stored, so retrying is safe; each failure counts in `commit_errors`). If it still fails: `OffsetCommitError`, and the offset is committed with a later chunk or the chunk is reprocessed by the next owner: duplicates, never loss |
 | Partition revoked mid-batch (rebalance) | chunks already committed stay committed; the rest is read by the new owner |
 | SIGTERM | the current chunk finishes (DB commit, then offset commit), then the member leaves the group: no loss, no duplicates |
 

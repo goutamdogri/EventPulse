@@ -1,11 +1,10 @@
-// S2-F2 end to end: records on events.raw (encoded exactly like the API does) -> consumer group -> Postgres.
-// Each test file run uses its own consumer group, so it never disturbs a real sink-postgres consumer.
+// S2-F2 end to end: records (encoded exactly like the API does) -> consumer group -> Postgres.
+// Uses its own throw-away topic and consumer group (never events.raw / sink-postgres) and the test database.
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import {
-  TOPIC_EVENTS_RAW,
   createKafka,
   encodeEvent,
   loadKafkaClientConfig,
@@ -13,15 +12,18 @@ import {
 import type { KeyMode, Producer } from '@eventpulse/kafka-config';
 import { AppModule } from '../src/app.module.js';
 import { SinkConsumer } from '../src/consumer/sink-consumer.js';
+import { createTopic, deleteTopic } from './process-helpers.js';
 
 const GROUP = `sink-e2e-${randomUUID()}`;
+let TOPIC = '';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function startSink(): Promise<{ app: INestApplication; sink: SinkConsumer }> {
   process.env.CONSUMER_GROUP_ID = GROUP;
-  // A brand-new group starts at the end of the log (no history replay in tests); once it has committed
-  // offsets it resumes from them, which is what the restart test checks.
-  process.env.CONSUMER_FROM_BEGINNING = 'false';
+  process.env.CONSUMER_TOPIC = TOPIC;
+  // Fresh topic: start from the beginning. After a restart the group resumes from its committed offsets
+  // instead (the restart test checks that nothing is replayed).
+  process.env.CONSUMER_FROM_BEGINNING = 'true';
   process.env.CONSUMER_SESSION_TIMEOUT_MS = '10000';
   const mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = mod.createNestApplication({ logger: false });
@@ -38,7 +40,7 @@ async function waitFor(cond: () => Promise<boolean> | boolean, timeoutMs: number
   throw new Error(`timed out waiting for ${what}`);
 }
 
-describe('consumer-sink: events.raw -> Postgres', () => {
+describe('consumer-sink: Kafka -> Postgres', () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
   let producer: Producer;
   let a: { app: INestApplication; sink: SinkConsumer };
@@ -58,7 +60,7 @@ describe('consumer-sink: events.raw -> Postgres', () => {
       return { key: e.key, value: e.value, headers: e.headers };
     });
     for (let i = 0; i < messages.length; i += 500) {
-      await producer.send({ topic: TOPIC_EVENTS_RAW, messages: messages.slice(i, i + 500) });
+      await producer.send({ topic: TOPIC, messages: messages.slice(i, i + 500) });
     }
   };
 
@@ -66,6 +68,7 @@ describe('consumer-sink: events.raw -> Postgres', () => {
     Number((await pool.query('select count(*) from events where event_id = any($1::uuid[])', [ids])).rows[0].count);
 
   beforeAll(async () => {
+    TOPIC = await createTopic(6);
     producer = createKafka({ ...loadKafkaClientConfig(process.env, 'sink-e2e-producer'), logLevel: 'error' }).producer({
       kafkaJS: { acks: -1, idempotent: true },
       'linger.ms': 0,
@@ -73,12 +76,12 @@ describe('consumer-sink: events.raw -> Postgres', () => {
     await producer.connect();
     a = await startSink();
     await a.sink.waitForAssignment();
-    await sleep(1500); // let the new group resolve its "latest" start position before we produce
   });
 
   afterAll(async () => {
     await a?.app.close();
     await producer?.disconnect();
+    await deleteTopic(TOPIC);
     await pool.end();
   });
 

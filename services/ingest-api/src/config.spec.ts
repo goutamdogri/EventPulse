@@ -8,6 +8,8 @@ describe('loadConfig', () => {
     expect(c.producer).toMatchObject({ acks: -1, idempotent: true, compression: 'none', lingerMs: 0 });
     expect(c.batcher).toEqual({ maxMessages: 500, maxWaitMs: 5, maxBytes: 900_000, maxQueue: 10_000, maxInFlight: 1 });
     expect(c.keyMode).toBe('tenant');
+    expect(c.topic).toBe('events.raw');
+    expect(loadConfig({ ...base, KAFKA_TOPIC: 't1' }).topic).toBe('t1');
     expect(c).not.toHaveProperty('databaseUrl');
   });
 

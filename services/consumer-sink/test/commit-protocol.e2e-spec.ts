@@ -94,6 +94,19 @@ describe('S2-F3 commit protocol (real process)', () => {
     expect(r.stats.duplicates).toBe(0);
   });
 
+  it('committed offset = last processed offset + 1 (the next offset to read), exactly at the log end', async () => {
+    const topic = await createTopic(1);
+    topics.push(topic);
+    const group = `sink-e2e-${randomUUID()}`;
+    const ids = await produceEvents(topic, 1234); // offsets 0..1233 on the single partition
+    start({ CONSUMER_TOPIC: topic, CONSUMER_GROUP_ID: group, SINK_MAX_ROWS: '500' });
+    await waitFor(async () => (await db.countRows(ids)) === 1234, 60_000, '1234 rows');
+    await waitFor(async () => (await groupOffsets(group, topic))[0].committed === 1234, 15_000, 'committed offset 1234');
+    // Last processed offset is 1233; Kafka stores "next offset to read" = 1233 + 1. Not 1233 (would re-read the
+    // last record on restart), not beyond the log end.
+    expect(await groupOffsets(group, topic)).toEqual([{ partition: 0, committed: 1234, end: 1234 }]);
+  });
+
   it('database unreachable: no offset advances while it is down; after it returns every row is stored', async () => {
     const topic = await createTopic();
     topics.push(topic);
@@ -132,7 +145,7 @@ describe('S2-F3 commit protocol (real process)', () => {
     const first = start({ ...common, SINK_PROCESSING_DELAY_MS: '300' }); // slow, so we stop it mid-way
     await waitFor(async () => (await db.countRows(ids)) >= 400, 60_000, 'some progress');
     const exit = await first.stop();
-    expect(exit.signal === 'SIGTERM' || exit.code === 0).toBe(true); // a graceful exit, not a crash
+    expect(exit).toEqual({ code: 0, signal: null }); // a graceful exit with code 0 (S2-F2), not a crash
     const rowsAtStop = await db.countRows(ids);
     expect(rowsAtStop).toBeLessThan(3000);
     // Clean shutdown: every stored row has its offset committed.

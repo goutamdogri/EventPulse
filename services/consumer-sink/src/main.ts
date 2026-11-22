@@ -11,7 +11,23 @@ async function main() {
     logger: logEnabled ? ['log', 'warn', 'error'] : ['error'],
   });
   app.disable('x-powered-by');
-  app.enableShutdownHooks(); // SIGTERM/SIGINT -> leave the group, finish the batch, close the pool
+  // SIGTERM/SIGINT -> leave the group (the current chunk finishes and commits), close the DLQ producer and the
+  // pool, then exit 0. Handled here instead of enableShutdownHooks(), which re-raises the signal (exit 143).
+  let closing = false;
+  const shutdown = (signal: string) => {
+    if (closing) return;
+    closing = true;
+    console.log(`consumer-sink: ${signal} received, shutting down`);
+    app.close().then(
+      () => process.exit(0),
+      (e: unknown) => {
+        console.error('consumer-sink: shutdown failed', e);
+        process.exit(1);
+      },
+    );
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
   const cfg = app.get<AppConfig>(CONFIG);
   await app.listen(cfg.port, '0.0.0.0');
   console.log(`consumer-sink group=${cfg.consumer.groupId} http=:${cfg.port} pid=${process.pid}`);

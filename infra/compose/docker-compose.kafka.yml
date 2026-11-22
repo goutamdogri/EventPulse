@@ -38,7 +38,8 @@ x-kafka-common: &kafka-common
 
 x-kafka-env: &kafka-env
   # Same id on all three brokers: they format their storage as one cluster.
-  CLUSTER_ID: ${KAFKA_CLUSTER_ID:-q0MdLj2DThKJbAFI6nHEYQ}
+  # Generate once: docker run --rm apache/kafka:4.3.2 /opt/kafka/bin/kafka-storage.sh random-uuid
+  CLUSTER_ID: "${KAFKA_CLUSTER_ID:?set KAFKA_CLUSTER_ID in infra/compose/.env, see .env.example}"
   KAFKA_PROCESS_ROLES: broker,controller
   KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
   KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER

@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import {
   KEY_MODES,
+  TOPIC_EVENTS_RAW,
   envBool,
   envEnum,
   envInt,
@@ -50,6 +51,8 @@ export interface AppConfig {
   producer: ProducerConfig;
   batcher: BatcherConfig;
   keyMode: KeyMode;
+  /** events.raw unless overridden (KAFKA_TOPIC); e2e tests write to a throw-away topic, never to events.raw. */
+  topic: string;
 }
 
 // Called from a provider factory (not at import time) so tests can set env first.
@@ -97,6 +100,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     batcher,
     keyMode: envEnum(env, 'KAFKA_KEY_MODE', KEY_MODES, 'tenant'),
+    topic: env.KAFKA_TOPIC || TOPIC_EVENTS_RAW,
   };
 }
 

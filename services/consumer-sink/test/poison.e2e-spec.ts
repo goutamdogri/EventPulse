@@ -8,6 +8,7 @@ import {
   createTopicNamed,
   databaseUrlViaProxy,
   deleteTopic,
+  dockerPg,
   fullyCommitted,
   groupOffsets,
   producePoison,
@@ -17,6 +18,7 @@ import {
   sleep,
   spawnSink,
   waitFor,
+  waitPgReady,
   waitReady,
 } from './process-helpers.js';
 import type { SinkProcess } from './process-helpers.js';
@@ -45,6 +47,8 @@ describe('S2-F4 poison messages (real process)', () => {
 
   afterAll(async () => {
     await setPgProxy(true).catch(() => undefined);
+    await dockerPg('start').catch(() => undefined); // never leave Postgres stopped
+    await waitPgReady().catch(() => undefined);
     await Promise.all(topics.map(deleteTopic));
     await db.end();
   });
@@ -114,6 +118,39 @@ describe('S2-F4 poison messages (real process)', () => {
       await setPgProxy(true);
     }
     await waitFor(async () => (await db.countRows(ids)) === 1000 && (await fullyCommitted(group, topic)), 60_000, '1000 rows after recovery');
+    expect((await sink.stats()).dlq).toBe(0);
+    expect(await readTopic(dlq, 3000)).toHaveLength(0);
+  });
+
+  it('Postgres container STOPPED for 30 s under load (plan 4.4): zero dead letters, all rows after restart', async () => {
+    const { topic, dlq, group } = await setupTopics();
+    const sink = start({
+      CONSUMER_TOPIC: topic,
+      SINK_DLQ_TOPIC: dlq,
+      CONSUMER_GROUP_ID: group,
+      PG_CONN_TIMEOUT_MS: '1000',
+      PG_STATEMENT_TIMEOUT_MS: '3000',
+      SINK_TRANSIENT_RETRY_WINDOW_MS: '3000',
+      SINK_PAUSE_MS: '2000',
+    });
+    await waitReady(sink);
+    const warm = await produceEvents(topic, 300); // load before the stop
+    await waitFor(async () => (await db.countRows(warm)) === 300, 30_000, 'warm-up rows');
+
+    let during: string[] = [];
+    try {
+      await dockerPg('stop'); // a real shutdown: connections are closed (57P01 / ECONNREFUSED / terminated)
+      during = await produceEvents(topic, 1000); // load while Postgres is down
+      await sleep(30_000);
+      const st = await sink.stats();
+      expect(st.dlq).toBe(0); // the DB being down is never the record's fault
+      expect(st.errors_by_class.TRANSIENT_DB).toBeGreaterThan(0);
+      expect(st.pauses).toBeGreaterThan(0);
+    } finally {
+      await dockerPg('start');
+      await waitPgReady();
+    }
+    await waitFor(async () => (await db.countRows(during)) === 1000 && (await fullyCommitted(group, topic)), 90_000, '1000 rows after Postgres restarted');
     expect((await sink.stats()).dlq).toBe(0);
     expect(await readTopic(dlq, 3000)).toHaveLength(0);
   });
