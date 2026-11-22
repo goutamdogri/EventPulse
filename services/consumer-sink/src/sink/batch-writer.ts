@@ -7,13 +7,16 @@
 import type { Pool } from 'pg';
 import type { EventRow } from './parse.js';
 
-export const INSERT_SQL = `
-  INSERT INTO events (event_id, tenant_id, type, occurred_at, schema_version, payload, received_at)
+export function insertSql(table = 'events', dedup = true): string {
+  return `
+  INSERT INTO ${table} (event_id, tenant_id, type, occurred_at, schema_version, payload, received_at)
   SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::int[], $6::jsonb[], $7::timestamptz[]
   )
-  ON CONFLICT (event_id) DO NOTHING
+  ${dedup ? 'ON CONFLICT (event_id) DO NOTHING' : ''}
   RETURNING received_at`;
+}
+export const INSERT_SQL = insertSql();
 
 export interface WriteResult {
   attempted: number;
@@ -45,7 +48,11 @@ export function toColumns(rows: EventRow[]) {
 }
 
 export class BatchWriter {
-  constructor(private readonly pool: Pool) {}
+  private readonly sql: string;
+  /** dedup=false (K5, debug-only): plain INSERT into `table`, which has no primary key. */
+  constructor(private readonly pool: Pool, opts: { table?: string; dedup?: boolean } = {}) {
+    this.sql = opts.dedup === false ? insertSql(opts.table ?? 'events_nodedup', false) : INSERT_SQL;
+  }
 
   /** One transaction: BEGIN, one INSERT for all rows, COMMIT. Resolves only after COMMIT returned. */
   async writeChunk(rows: EventRow[]): Promise<WriteResult> {
@@ -58,7 +65,7 @@ export class BatchWriter {
       try {
         // RETURNING lists only the rows actually inserted (not the ones ON CONFLICT skipped), so freshness is
         // measured for real first writes, never for reprocessed duplicates.
-        const r = await client.query<{ received_at: Date }>(INSERT_SQL, toColumns(rows));
+        const r = await client.query<{ received_at: Date }>(this.sql, toColumns(rows));
         await client.query('COMMIT');
         const committedAt = Date.now();
         return {

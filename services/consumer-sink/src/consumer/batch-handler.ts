@@ -162,7 +162,7 @@ function failureReason(e: unknown, dlqEnabled: boolean): ChunkFailure {
 /** One chunk: parse, write, dead-letter, commit. Returns false if the partition was revoked meanwhile. */
 async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerDeps): Promise<boolean> {
   const { stats, faults } = deps;
-  faults.hit('before_parse');
+  faults.hit('before_parse', part.length);
   const good: { raw: RawMessage; row: EventRow }[] = [];
   const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
   for (const m of part) {
@@ -174,12 +174,12 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
     stats.countError('PERMANENT_PARSE', parseErrors.length);
     if (!deps.retry.dlqEnabled) throw new PoisonBatchError(parseErrors.map((p) => p.error));
   }
-  faults.hit('after_parse');
+  faults.hit('after_parse', part.length);
 
   if (deps.processingDelayMs > 0) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
 
   const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
-  faults.hit('after_db_commit');
+  faults.hit('after_db_commit', part.length);
 
   const dead: DeadLetter[] = [
     ...parseErrors.map((p) => ({ raw: p.raw, errorClass: 'PERMANENT_PARSE' as const, errorCode: p.error.code, errorMessage: p.error.message, attempts: 1 })),

@@ -1,4 +1,4 @@
-import { BatchWriter, chunk, toColumns } from './batch-writer.js';
+import { BatchWriter, chunk, insertSql, toColumns } from './batch-writer.js';
 import type { EventRow } from './parse.js';
 
 const row = (i: number): EventRow => ({
@@ -63,5 +63,14 @@ describe('BatchWriter.writeChunk (fake pool)', () => {
     const f = fakePool(async () => ({ rowCount: 0 }));
     expect(await new BatchWriter(f.pool).writeChunk([])).toMatchObject({ attempted: 0, inserted: 0 });
     expect(f.pool.connect).not.toHaveBeenCalled();
+  });
+});
+
+describe('insertSql (K5 dedup switch)', () => {
+  it('dedup on keeps ON CONFLICT; off writes plainly into the named table', () => {
+    expect(insertSql()).toContain('ON CONFLICT (event_id) DO NOTHING');
+    const off = insertSql('events_nodedup', false);
+    expect(off).toContain('INSERT INTO events_nodedup');
+    expect(off).not.toContain('ON CONFLICT');
   });
 });

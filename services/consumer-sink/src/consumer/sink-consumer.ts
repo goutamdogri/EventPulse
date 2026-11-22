@@ -56,12 +56,15 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     @Inject(PG_POOL) pool: Pool,
     readonly stats: SinkStats,
   ) {
-    this.writer = new BatchWriter(pool);
+    this.writer = new BatchWriter(pool, { dedup: cfg.sink.dedup, table: cfg.sink.dedupTable });
     this.faults = new FaultInjector(cfg.faults);
     this.lag = new LagMonitor(cfg.kafka, cfg.consumer.groupId, cfg.consumer.topic, cfg.lagPollMs, stats);
     this.dlq = new DlqPublisher(cfg.kafka, cfg.retry.dlqTopic, { sourceTopic: cfg.consumer.topic, groupId: cfg.consumer.groupId });
     if (!cfg.retry.dlqEnabled) {
       this.log.warn('SINK_DLQ_ENABLED=false: a poison record will block its partition (S2-F3 behavior)');
+    }
+    if (!cfg.sink.dedup) {
+      this.log.warn(`DEBUG: SINK_DEDUP=false, plain INSERT into ${cfg.sink.dedupTable} (no ON CONFLICT): reprocessed rows are stored twice`);
     }
     if (cfg.faults.crashAt !== 'none') {
       this.log.warn(`DEBUG FAULT ARMED: SIGKILL at ${cfg.faults.crashAt} on batch ${cfg.faults.crashAfterBatches}`);

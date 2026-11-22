@@ -25,6 +25,12 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...base, CRASH_AT: 'somewhere', DEBUG_FAULTS: 'true' })).toThrow();
   });
 
+  it('SINK_DEDUP=false is debug-only (K5)', () => {
+    expect(loadConfig(base).sink).toMatchObject({ dedup: true, dedupTable: 'events_nodedup' });
+    expect(() => loadConfig({ ...base, SINK_DEDUP: 'false' })).toThrow(/DEBUG_FAULTS/);
+    expect(loadConfig({ ...base, SINK_DEDUP: 'false', DEBUG_FAULTS: 'true' }).sink.dedup).toBe(false);
+  });
+
   it('topic and processing delay overrides', () => {
     expect(loadConfig(base).consumer.topic).toBe('events.raw');
     const c = loadConfig({ ...base, CONSUMER_TOPIC: 't1', SINK_PROCESSING_DELAY_MS: '200' });

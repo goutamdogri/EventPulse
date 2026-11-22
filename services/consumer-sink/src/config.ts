@@ -45,7 +45,13 @@ export interface AppConfig {
   pgStatementTimeoutMs: number;
   kafka: KafkaClientConfig;
   consumer: ConsumerConfig;
-  sink: { maxRows: number; processingDelayMs: number };
+  sink: {
+    maxRows: number;
+    processingDelayMs: number;
+    /** K5 (debug-only): false = plain INSERT into dedupTable, so a reprocessed row is stored twice. */
+    dedup: boolean;
+    dedupTable: string;
+  };
   /** How often the group lag is polled for /metrics and /debug/stats (S2-F6). 0 = off. */
   lagPollMs: number;
   /** S2-F4 poison handling. */
@@ -98,6 +104,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error(`CRASH_AT=${faults.crashAt} needs DEBUG_FAULTS=true (crash points are debug-only)`);
   }
 
+  // K5: SINK_DEDUP=false turns off ON CONFLICT and writes to a copy of the table with no primary key.
+  const dedup = envBool(env, 'SINK_DEDUP', true);
+  if (!dedup && !envBool(env, 'DEBUG_FAULTS', false)) {
+    throw new Error('SINK_DEDUP=false needs DEBUG_FAULTS=true (it is a debug-only switch for experiment K5)');
+  }
+
   const retry = {
     dlqEnabled: envBool(env, 'SINK_DLQ_ENABLED', true),
     dlqTopic: env.SINK_DLQ_TOPIC || TOPIC_EVENTS_DLQ,
@@ -124,6 +136,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     sink: {
       maxRows: envInt(env, 'SINK_MAX_ROWS', 1000, 1),
       processingDelayMs: envInt(env, 'SINK_PROCESSING_DELAY_MS', 0, 0),
+      dedup,
+      dedupTable: env.SINK_NODEDUP_TABLE || 'events_nodedup',
     },
     faults,
     retry,
