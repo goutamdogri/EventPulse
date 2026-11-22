@@ -16,7 +16,20 @@ scrape_configs:
     scrape_interval: 1s
     scrape_timeout: 1s
     static_configs:
-      - targets: ["host.docker.internal:8001", "host.docker.internal:8002", "host.docker.internal:8003"]
+      # 8004-8012 were added for K3 (up to 12 consumers in one group).
+      - targets:
+          - "host.docker.internal:8001"
+          - "host.docker.internal:8002"
+          - "host.docker.internal:8003"
+          - "host.docker.internal:8004"
+          - "host.docker.internal:8005"
+          - "host.docker.internal:8006"
+          - "host.docker.internal:8007"
+          - "host.docker.internal:8008"
+          - "host.docker.internal:8009"
+          - "host.docker.internal:8010"
+          - "host.docker.internal:8011"
+          - "host.docker.internal:8012"
 
   # node_exporter runs with network_mode: host, so it is NOT reachable as "node-exporter".
   - job_name: node
