@@ -47,3 +47,10 @@ scrape_configs:
     scrape_timeout: 1s
     static_configs:
       - targets: ["postgres-exporter:9187"]
+
+  # K4: kafka-exporter container (leader / ISR / offsets per topic partition). Defined in docker-compose.kafka.yml.
+  - job_name: kafka
+    scrape_interval: 1s
+    scrape_timeout: 1s
+    static_configs:
+      - targets: ["host.docker.internal:9308"]

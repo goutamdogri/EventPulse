@@ -127,6 +127,24 @@ services:
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.raw
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.dlq
 
+  # K4: Kafka metrics for Prometheus (leader and ISR per partition, brokers seen, offsets). The Kafka brokers expose no
+  # Prometheus metrics themselves. It talks to all three brokers on the internal listener, so when one is killed it can
+  # still ask the others. Prometheus (another compose project) scrapes it as host.docker.internal:9308.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: ep-kafka-exporter
+    cpuset: "5,11"                       # the monitoring cores, away from the brokers (3,9,4,10)
+    restart: unless-stopped
+    ports:
+      - "9308:9308"
+    command:
+      - --kafka.server=kafka1:19092
+      - --kafka.server=kafka2:19092
+      - --kafka.server=kafka3:19092
+      - --refresh.metadata=2s            # default 30 s is too slow to see a leader change
+      - --topic.filter=^(k4-.*|events\..*)$
+      - --group.filter=.*
+
 volumes:
   kafka1-data:
     name: eventpulse-kafka1-data
