@@ -1,33 +1,32 @@
 // What the sink does with one batch of one partition. Kept free of Kafka and Nest types so it can be
-// unit-tested with a fake writer and fake offset callbacks.
+// unit-tested with fakes.
 //
 // S2-F3 commit protocol: offsets are committed only after the database transaction commits.
+// S2-F4 poison handling: a record that fails on its own goes to the DLQ; a database that is down never does.
 //
 //   for each chunk of the batch (SINK_MAX_ROWS messages):
 //       stop if the consumer is shutting down or the partition was revoked (rebalance)
-//       parse                                   crash points: before_parse, after_parse
-//       write: BEGIN; INSERT ...; COMMIT        (offset NOT resolved if this throws)
-//                                               crash point: after_db_commit (rows stored, offset not committed)
-//       stop if the partition was revoked meanwhile (the new owner reprocesses; ON CONFLICT absorbs it)
-//       resolveOffset(last offset of the chunk) the client stores last + 1, the next offset to read
-//       commit offsets to Kafka
+//       parse every record                        crash points: before_parse, after_parse
+//         unparseable -> dead letter (PERMANENT_PARSE), no retry
+//       write the good rows: BEGIN; INSERT ...; COMMIT
+//         TRANSIENT/SYSTEMIC DB error -> backoff + retry inside the window; then pause the partition and throw
+//                                        (nothing resolved: the chunk is read again after the pause)
+//         PERMANENT/UNKNOWN DB error  -> isolate by bisection; good rows are written, each bad row is retried
+//                                        SINK_MAX_RETRIES times, then becomes a dead letter (PERMANENT_DB)
+//                                        crash point: after_db_commit
+//       publish dead letters to the DLQ and wait for the ack (failure -> throw, nothing resolved)
+//       stop if the partition was revoked meanwhile
+//       resolveOffset(last offset of the chunk) + commit offsets to Kafka
 //
 // This is the ONLY place that resolves or commits offsets in this service.
-//
-// Consequences (at-least-once):
-//   - DB write fails     -> nothing resolved, the client seeks back, the chunk is retried: no loss.
-//   - crash before COMMIT -> chunk reprocessed: no loss, no duplicate rows.
-//   - crash after COMMIT but before the offset commit -> chunk reprocessed: duplicates, absorbed and counted.
-//   - offset commit fails -> rows are already stored; the error propagates, the offset is committed later
-//     or the chunk is reprocessed by the next owner: duplicates, never loss.
-//   - at most one chunk per partition is ever "written but not committed".
-//
-// Poison records still throw (S2-F2 behavior; S2-F4 adds bounded retry + DLQ). Chunks before the poison
-// chunk are committed, so the partition is blocked exactly at the bad chunk.
+// With SINK_DLQ_ENABLED=false the old S2-F2/F3 behavior returns: a poison record throws and blocks its partition.
 
 import type { SinkStats } from '../observability/sink-stats.js';
-import type { BatchWriter } from '../sink/batch-writer.js';
+import type { BatchWriter, WriteResult } from '../sink/batch-writer.js';
 import { chunk } from '../sink/batch-writer.js';
+import type { DeadLetter, DlqSink } from '../sink/dlq-publisher.js';
+import { backoffMs, classifyDbError, errorCode, isBlocking } from '../sink/errors.js';
+import type { ErrorClass } from '../sink/errors.js';
 import { parseMessage } from '../sink/parse.js';
 import type { EventRow, ParseError, RawMessage } from '../sink/parse.js';
 import type { FaultInjector } from './fault-injector.js';
@@ -49,6 +48,20 @@ export class OffsetCommitError extends Error {
   }
 }
 
+export class DbUnavailableError extends Error {
+  readonly name = 'DbUnavailableError';
+  constructor(readonly errorClass: ErrorClass, readonly cause: unknown, pausedMs: number) {
+    super(`${errorClass} while writing (partition paused for ${pausedMs} ms, chunk will be retried): ${String((cause as Error)?.message ?? cause)}`);
+  }
+}
+
+export class DlqPublishError extends Error {
+  readonly name = 'DlqPublishError';
+  constructor(readonly cause: unknown) {
+    super(`DLQ publish failed; source offset not committed, chunk will be retried: ${String((cause as Error)?.message ?? cause)}`);
+  }
+}
+
 export interface BatchContext {
   messages: RawMessage[];
   resolveOffset(offset: string): void;
@@ -56,8 +69,21 @@ export interface BatchContext {
   heartbeat(): Promise<void>;
   /** false once the consumer is disconnecting. */
   isRunning(): boolean;
-  /** true once this partition was revoked by a rebalance (or seeked). */
+  /** true once this partition was revoked by a rebalance (or seeked / paused). */
   isStale(): boolean;
+  /** Pause fetching this partition for ms, then resume (the unresolved chunk is read again). */
+  pausePartition(ms: number): void;
+}
+
+export interface RetryPolicy {
+  dlqEnabled: boolean;
+  /** Retries of one isolated bad row before it is dead-lettered. */
+  maxRetries: number;
+  baseMs: number;
+  maxMs: number;
+  /** How long to retry a down DB inside one eachBatch call before pausing the partition. */
+  transientWindowMs: number;
+  pauseMs: number;
 }
 
 export interface HandlerDeps {
@@ -67,15 +93,31 @@ export interface HandlerDeps {
   faults: Pick<FaultInjector, 'startBatch' | 'hit'>;
   /** SINK_PROCESSING_DELAY_MS: artificial work per chunk, before the DB write (tests, K8). */
   processingDelayMs: number;
+  dlq: DlqSink;
+  retry: RetryPolicy;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  rand?: () => number;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+interface WriteOutcome {
+  attempted: number;
+  inserted: number;
+  dead: DeadLetter[];
+}
+
+const add = (a: WriteOutcome, b: WriteOutcome): WriteOutcome => ({
+  attempted: a.attempted + b.attempted,
+  inserted: a.inserted + b.inserted,
+  dead: [...a.dead, ...b.dead],
+});
+const fromWrite = (w: WriteResult): WriteOutcome => ({ attempted: w.attempted, inserted: w.inserted, dead: [] });
+
 export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise<void> {
   if (ctx.messages.length === 0) return;
   const { stats, faults } = deps;
-  const sleep = deps.sleep ?? defaultSleep;
   stats.batches++;
   faults.startBatch();
 
@@ -87,27 +129,43 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
 
     faults.hit('before_parse');
     stats.consumed += part.length;
-    const rows: EventRow[] = [];
-    const errors: ParseError[] = [];
+    const good: { raw: RawMessage; row: EventRow }[] = [];
+    const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
     for (const m of part) {
       const r = parseMessage(m);
-      if (r.ok) rows.push(r.row);
-      else errors.push(r.error);
+      if (r.ok) good.push({ raw: m, row: r.row });
+      else parseErrors.push({ raw: m, error: r.error });
     }
-    if (errors.length > 0) throw new PoisonBatchError(errors);
+    if (parseErrors.length > 0) {
+      stats.countError('PERMANENT_PARSE', parseErrors.length);
+      if (!deps.retry.dlqEnabled) throw new PoisonBatchError(parseErrors.map((p) => p.error));
+    }
     faults.hit('after_parse');
 
-    if (deps.processingDelayMs > 0) await sleep(deps.processingDelayMs);
+    if (deps.processingDelayMs > 0) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
 
-    const w = await deps.writer.writeChunk(rows); // resolves only after COMMIT
+    const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
     stats.chunks++;
-    stats.attempted += w.attempted;
-    stats.inserted += w.inserted;
+    stats.attempted += out.attempted;
+    stats.inserted += out.inserted;
     faults.hit('after_db_commit');
 
+    const dead: DeadLetter[] = [
+      ...parseErrors.map((p) => ({ raw: p.raw, errorClass: 'PERMANENT_PARSE' as const, errorCode: p.error.code, errorMessage: p.error.message, attempts: 1 })),
+      ...out.dead,
+    ];
+    if (dead.length > 0) {
+      try {
+        await deps.dlq.publish(dead); // acks=all; only then may the source offset move past these records
+      } catch (e) {
+        stats.dlqErrors++;
+        throw new DlqPublishError(e);
+      }
+      for (const d of dead) stats.countDlq(d.errorClass);
+    }
+
     if (ctx.isStale()) {
-      // Revoked while we were writing: committing for a partition we no longer own would fail. The rows are
-      // stored; the new owner reads this chunk again and ON CONFLICT absorbs it (counted there as duplicates).
+      // Revoked while we were writing: the new owner reads this chunk again; ON CONFLICT absorbs it.
       stats.stoppedEarly++;
       return;
     }
@@ -125,4 +183,113 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
     stats.lastBatchAt = Date.now();
     await ctx.heartbeat();
   }
+}
+
+/**
+ * Writes the rows. Blocking errors (DB down, schema broken) are retried with backoff inside the window, then
+ * the partition is paused and DbUnavailableError thrown. Permanent row errors are isolated (with the DLQ on).
+ */
+async function writeWithRetry(
+  good: { raw: RawMessage; row: EventRow }[],
+  ctx: BatchContext,
+  deps: HandlerDeps,
+): Promise<WriteOutcome> {
+  if (good.length === 0) return { attempted: 0, inserted: 0, dead: [] };
+  const sleep = deps.sleep ?? defaultSleep;
+  const now = deps.now ?? Date.now;
+  const p = deps.retry;
+  const rawByOffset = new Map(good.map((g) => [g.row.offset, g.raw]));
+  const rows = good.map((g) => g.row);
+  const started = now();
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      if (!p.dlqEnabled) return fromWrite(await deps.writer.writeChunk(rows)); // S2-F3 behavior: any error throws
+      return await writeIsolating(rows, rawByOffset, deps);
+    } catch (e) {
+      const cls = classifyDbError(e);
+      if (!p.dlqEnabled && !isBlocking(cls)) {
+        deps.stats.countError(cls);
+        throw e; // DLQ off: a permanent row error blocks the partition (the client retries the chunk)
+      }
+      deps.stats.countError(cls);
+      if (!ctx.isRunning() || ctx.isStale()) throw e;
+      const wait = backoffMs(attempt, p.baseMs, p.maxMs, deps.rand);
+      if (now() - started + wait > p.transientWindowMs) {
+        // Don't hold eachBatch past the rebalance/poll limit: pause the partition and let it come back.
+        ctx.pausePartition(p.pauseMs);
+        deps.stats.pauses++;
+        throw new DbUnavailableError(cls, e, p.pauseMs);
+      }
+      deps.stats.countRetry(cls);
+      await sleep(wait);
+      await ctx.heartbeat();
+    }
+  }
+}
+
+/**
+ * Write a set of rows in one transaction; if Postgres rejects it for a row-level reason, split it in halves
+ * until the bad rows are alone, retry each bad row maxRetries times, then dead-letter it.
+ * Blocking errors (DB down / schema broken) are rethrown at any depth: the whole chunk is then retried.
+ */
+async function writeIsolating(
+  rows: EventRow[],
+  rawByOffset: Map<string, RawMessage>,
+  deps: HandlerDeps,
+  depth = 0,
+): Promise<WriteOutcome> {
+  try {
+    return fromWrite(await deps.writer.writeChunk(rows));
+  } catch (e) {
+    const cls = classifyDbError(e);
+    if (isBlocking(cls)) throw e;
+    deps.stats.countError(cls);
+    if (depth === 0) deps.stats.isolations++;
+    if (rows.length > 1) {
+      const mid = rows.length >> 1;
+      const a = await writeIsolating(rows.slice(0, mid), rawByOffset, deps, depth + 1);
+      const b = await writeIsolating(rows.slice(mid), rawByOffset, deps, depth + 1);
+      return add(a, b);
+    }
+    return retryOneRow(rows[0], e, cls, rawByOffset, deps);
+  }
+}
+
+async function retryOneRow(
+  row: EventRow,
+  firstError: unknown,
+  firstClass: ErrorClass,
+  rawByOffset: Map<string, RawMessage>,
+  deps: HandlerDeps,
+): Promise<WriteOutcome> {
+  const sleep = deps.sleep ?? defaultSleep;
+  let lastError = firstError;
+  let lastClass = firstClass;
+  for (let retry = 1; retry <= deps.retry.maxRetries; retry++) {
+    deps.stats.countRetry(lastClass);
+    await sleep(backoffMs(retry, deps.retry.baseMs, deps.retry.maxMs, deps.rand));
+    try {
+      return fromWrite(await deps.writer.writeChunk([row])); // it was flaky after all
+    } catch (e) {
+      const cls = classifyDbError(e);
+      if (isBlocking(cls)) throw e;
+      deps.stats.countError(cls);
+      lastError = e;
+      lastClass = cls;
+    }
+  }
+  return {
+    attempted: 0,
+    inserted: 0,
+    dead: [
+      {
+        raw: rawByOffset.get(row.offset)!,
+        errorClass: lastClass === 'UNKNOWN' ? 'UNKNOWN' : 'PERMANENT_DB',
+        errorCode: errorCode(lastError),
+        errorMessage: String((lastError as Error)?.message ?? lastError),
+        attempts: 1 + deps.retry.maxRetries,
+      },
+    ],
+  };
 }

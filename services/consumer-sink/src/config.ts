@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import {
   GROUP_SINK_POSTGRES,
+  TOPIC_EVENTS_DLQ,
   TOPIC_EVENTS_RAW,
   envBool,
   envEnum,
@@ -45,6 +46,16 @@ export interface AppConfig {
   kafka: KafkaClientConfig;
   consumer: ConsumerConfig;
   sink: { maxRows: number; processingDelayMs: number };
+  /** S2-F4 poison handling. */
+  retry: {
+    dlqEnabled: boolean;
+    dlqTopic: string;
+    maxRetries: number;
+    baseMs: number;
+    maxMs: number;
+    transientWindowMs: number;
+    pauseMs: number;
+  };
   faults: FaultConfig;
 }
 
@@ -85,6 +96,21 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error(`CRASH_AT=${faults.crashAt} needs DEBUG_FAULTS=true (crash points are debug-only)`);
   }
 
+  const retry = {
+    dlqEnabled: envBool(env, 'SINK_DLQ_ENABLED', true),
+    dlqTopic: env.SINK_DLQ_TOPIC || TOPIC_EVENTS_DLQ,
+    maxRetries: envInt(env, 'SINK_MAX_RETRIES', 3, 0),
+    baseMs: envInt(env, 'SINK_RETRY_BASE_MS', 100, 1),
+    maxMs: envInt(env, 'SINK_RETRY_MAX_MS', 5_000, 1),
+    transientWindowMs: envInt(env, 'SINK_TRANSIENT_RETRY_WINDOW_MS', 20_000, 0),
+    pauseMs: envInt(env, 'SINK_PAUSE_MS', 5_000, 1),
+  };
+  if (retry.baseMs > retry.maxMs) throw new Error('SINK_RETRY_BASE_MS must be <= SINK_RETRY_MAX_MS');
+  if (retry.transientWindowMs + retry.maxMs >= consumer.rebalanceTimeoutMs) {
+    // One eachBatch call must finish within the rebalance timeout (it is also the max poll interval).
+    throw new Error('SINK_TRANSIENT_RETRY_WINDOW_MS + SINK_RETRY_MAX_MS must be < CONSUMER_REBALANCE_TIMEOUT_MS');
+  }
+
   return {
     port: envInt(env, 'METRICS_PORT', 8001, 0),
     databaseUrl,
@@ -98,6 +124,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       processingDelayMs: envInt(env, 'SINK_PROCESSING_DELAY_MS', 0, 0),
     },
     faults,
+    retry,
   };
 }
 

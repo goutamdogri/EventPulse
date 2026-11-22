@@ -1,7 +1,9 @@
 import { encodeEvent } from '@eventpulse/kafka-config';
 import { SinkStats } from '../observability/sink-stats.js';
 import type { EventRow, RawMessage } from '../sink/parse.js';
-import { OffsetCommitError, PoisonBatchError, handleBatch } from './batch-handler.js';
+import { DbUnavailableError, DlqPublishError, OffsetCommitError, PoisonBatchError, handleBatch } from './batch-handler.js';
+import type { RetryPolicy } from './batch-handler.js';
+import type { DeadLetter } from '../sink/dlq-publisher.js';
 import { FaultInjector } from './fault-injector.js';
 import type { CrashPoint } from './fault-injector.js';
 
@@ -29,7 +31,9 @@ type WriteFn = (rows: EventRow[]) => Promise<{ attempted: number; inserted: numb
 const okWrite: WriteFn = async (rows) => ({ attempted: rows.length, inserted: rows.length, durationMs: 1 });
 
 /** Records every call (writes, resolves, commits, heartbeats, crashes) in order. */
-function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; crashAfterBatches?: number } = {}) {
+const pgErr = (code: string, message = `pg error ${code}`) => Object.assign(new Error(message), { code });
+
+function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; crashAfterBatches?: number; retry?: Partial<RetryPolicy>; dlqPublish?: (d: DeadLetter[]) => Promise<void> } = {}) {
   const calls: string[] = [];
   const stats = new SinkStats();
   const write = opts.write ?? okWrite;
@@ -43,6 +47,18 @@ function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; 
   const faults = new FaultInjector({ crashAt: opts.crashAt ?? 'none', crashAfterBatches: opts.crashAfterBatches ?? 1 }, kill);
   let running = true;
   let stale = false;
+  const dead: DeadLetter[] = [];
+  const dlq = {
+    publish: vi.fn(async (letters: DeadLetter[]) => {
+      if (opts.dlqPublish) await opts.dlqPublish(letters);
+      dead.push(...letters);
+      calls.push(`dlq:${letters.length}`);
+    }),
+  };
+  const sleeps: number[] = [];
+  const sleep = vi.fn(async (ms: number) => void sleeps.push(ms));
+  const retry: RetryPolicy = { dlqEnabled: true, maxRetries: 3, baseMs: 100, maxMs: 1000, transientWindowMs: 10_000, pauseMs: 5000, ...opts.retry };
+  let clock = 0;
   const ctx = (messages: RawMessage[]) => ({
     messages,
     resolveOffset: vi.fn((o: string) => void calls.push(`resolve:${o}`)),
@@ -50,6 +66,7 @@ function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; 
     heartbeat: vi.fn(async () => void calls.push('heartbeat')),
     isRunning: () => running,
     isStale: () => stale,
+    pausePartition: vi.fn((ms: number) => void calls.push(`pause:${ms}`)),
   });
   return {
     calls,
@@ -57,7 +74,25 @@ function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; 
     kill,
     writeChunk,
     ctx,
-    deps: { writer: { writeChunk }, stats, maxRows: opts.maxRows ?? 2, faults, processingDelayMs: 0 },
+    dlq,
+    dead,
+    sleeps,
+    deps: {
+      writer: { writeChunk },
+      stats,
+      maxRows: opts.maxRows ?? 2,
+      faults,
+      processingDelayMs: 0,
+      dlq,
+      retry,
+      // fake clock: every sleep advances it, so the transient window is deterministic
+      sleep: async (ms: number) => {
+        clock += ms;
+        await sleep(ms);
+      },
+      now: () => clock,
+      rand: () => 1, // jitter at its max: delay == cap
+    },
     stop: () => (running = false),
     revoke: () => (stale = true),
   };
@@ -75,20 +110,20 @@ describe('handleBatch: offsets committed only after the DB commit', () => {
     expect(s.stats.snapshot()).toMatchObject({ consumed: 3, inserted: 3, chunks: 2, commits: 2, batches: 1 });
   });
 
-  it('writer rejects: that chunk is never resolved or committed', async () => {
-    const s = setup({ write: async () => Promise.reject(new Error('db down')) });
+  it('writer rejects (DB down): that chunk is never resolved or committed', async () => {
+    const s = setup({ write: async () => Promise.reject(pgErr('ECONNREFUSED')), retry: { transientWindowMs: 0 } });
     const c = s.ctx(msgs(2));
-    await expect(handleBatch(c, s.deps)).rejects.toThrow('db down');
+    await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(DbUnavailableError);
     expect(c.resolveOffset).not.toHaveBeenCalled();
     expect(c.commitOffsetsIfNecessary).not.toHaveBeenCalled();
   });
 
   it('3 chunks, writer fails on chunk 2: only chunk 1 is resolved and committed', async () => {
     let i = 0;
-    const s = setup({ write: async (rows) => (++i === 2 ? Promise.reject(new Error('boom')) : okWrite(rows)) });
+    const s = setup({ write: async (rows) => (++i === 2 ? Promise.reject(pgErr('08006')) : okWrite(rows)), retry: { transientWindowMs: 0 } });
     const ms = msgs(6);
     const c = s.ctx(ms);
-    await expect(handleBatch(c, s.deps)).rejects.toThrow('boom');
+    await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(DbUnavailableError);
     expect(c.resolveOffset.mock.calls).toEqual([[ms[1].offset]]);
     expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(1);
   });
@@ -135,8 +170,8 @@ describe('handleBatch: offsets committed only after the DB commit', () => {
     expect(s.stats.inserted).toBe(2); // nothing "un-done"
   });
 
-  it('poison in chunk 2: chunk 1 committed, the batch then throws at the poison chunk', async () => {
-    const s = setup();
+  it('DLQ off: poison in chunk 2 -> chunk 1 committed, the batch then throws at the poison chunk', async () => {
+    const s = setup({ retry: { dlqEnabled: false } });
     const ms = [msg(), msg(), msg(), poison()];
     const c = s.ctx(ms);
     await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(PoisonBatchError);
@@ -202,5 +237,132 @@ describe('crash points', () => {
     const s = setup();
     await handleBatch(s.ctx(msgs(4)), s.deps);
     expect(s.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe('S2-F4 poison handling', () => {
+  it('1 invalid JSON among 99 valid: 99 inserted, 1 dead-lettered (PERMANENT_PARSE), offset past all 100', async () => {
+    const s = setup({ maxRows: 1000 });
+    const ms = [...msgs(50), poison(), ...msgs(49)];
+    const c = s.ctx(ms);
+    await handleBatch(c, s.deps);
+    expect(s.stats.inserted).toBe(99);
+    expect(s.dead).toHaveLength(1);
+    expect(s.dead[0]).toMatchObject({ errorClass: 'PERMANENT_PARSE', errorCode: 'invalid_json', attempts: 1 });
+    expect(s.dead[0].raw).toBe(ms[50]); // original bytes, untouched
+    expect(c.resolveOffset).toHaveBeenCalledWith(ms[99].offset);
+    expect(s.calls.indexOf('dlq:1')).toBeLessThan(s.calls.indexOf(`resolve:${ms[99].offset}`)); // DLQ ack before commit
+    expect(s.stats.snapshot()).toMatchObject({ dlq: 1, dlq_by_class: { PERMANENT_PARSE: 1 } });
+  });
+
+  it('several poison records in one chunk: all dead-lettered, good ones stored', async () => {
+    const s = setup({ maxRows: 1000 });
+    await handleBatch(s.ctx([poison(), ...msgs(3), poison(), poison()]), s.deps);
+    expect(s.dead).toHaveLength(3);
+    expect(s.stats.inserted).toBe(3);
+  });
+
+  it('batch insert throws 22001: bisection isolates the bad row, good rows inserted, bad row retried maxRetries times then DLQ', async () => {
+    const ms = msgs(8);
+    const badId = JSON.parse(ms[5].value!.toString()).event_id;
+    const s = setup({
+      maxRows: 1000,
+      write: async (rows) => {
+        if (rows.some((r) => r.event_id === badId)) throw pgErr('22001', 'value too long for type character varying(100)');
+        return okWrite(rows);
+      },
+    });
+    const c = s.ctx(ms);
+    await handleBatch(c, s.deps);
+    expect(s.stats.inserted).toBe(7);
+    expect(s.dead).toHaveLength(1);
+    expect(s.dead[0]).toMatchObject({ errorClass: 'PERMANENT_DB', errorCode: '22001', attempts: 4 });
+    expect(s.dead[0].raw).toBe(ms[5]);
+    expect(s.stats.retriesByClass.PERMANENT_DB).toBe(3);
+    expect(s.sleeps).toEqual([100, 200, 400]); // backoff between the retries of the bad row
+    expect(c.resolveOffset).toHaveBeenCalledWith(ms[7].offset);
+    expect(s.stats.isolations).toBe(1);
+  });
+
+  it('a row that fails once then succeeds on retry is stored, not dead-lettered', async () => {
+    let failed = false;
+    const s = setup({
+      maxRows: 1,
+      write: async (rows) => {
+        if (!failed) {
+          failed = true;
+          throw pgErr('23514', 'check constraint');
+        }
+        return okWrite(rows);
+      },
+    });
+    await handleBatch(s.ctx(msgs(1)), s.deps);
+    expect(s.dead).toHaveLength(0);
+    expect(s.stats.inserted).toBe(1);
+  });
+
+  it('ECONNREFUSED 5 times then success: no DLQ, growing backoff, committed only after success', async () => {
+    let n = 0;
+    const s = setup({ write: async (rows) => (++n <= 5 ? Promise.reject(pgErr('ECONNREFUSED')) : okWrite(rows)) });
+    const c = s.ctx(msgs(2));
+    await handleBatch(c, s.deps);
+    expect(s.dlq.publish).not.toHaveBeenCalled();
+    expect(s.sleeps).toEqual([100, 200, 400, 800, 1000]); // doubled, capped at maxMs
+    expect(s.stats.retriesByClass.TRANSIENT_DB).toBe(5);
+    expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(1);
+    expect(s.calls.filter((x) => x.startsWith('resolve')).length).toBe(1);
+  });
+
+  it('DB down past the retry window: partition paused, DbUnavailableError, nothing resolved, nothing dead-lettered', async () => {
+    const s = setup({ write: async () => Promise.reject(pgErr('57P01', 'terminating connection due to administrator command')), retry: { transientWindowMs: 1000 } });
+    const c = s.ctx(msgs(2));
+    await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(DbUnavailableError);
+    expect(c.pausePartition).toHaveBeenCalledWith(5000);
+    expect(s.stats.pauses).toBe(1);
+    expect(c.resolveOffset).not.toHaveBeenCalled();
+    expect(s.dlq.publish).not.toHaveBeenCalled();
+    expect(s.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1000);
+  });
+
+  it('DB going down DURING isolation: the whole chunk is retried, nothing dead-lettered', async () => {
+    const ms = msgs(4);
+    const badId = JSON.parse(ms[1].value!.toString()).event_id;
+    let calls = 0;
+    const s = setup({
+      maxRows: 1000,
+      retry: { transientWindowMs: 0 },
+      write: async (rows) => {
+        calls++;
+        if (calls === 1 && rows.some((r) => r.event_id === badId)) throw pgErr('22P02');
+        throw pgErr('ECONNRESET');
+      },
+    });
+    await expect(handleBatch(s.ctx(ms), s.deps)).rejects.toBeInstanceOf(DbUnavailableError);
+    expect(s.dlq.publish).not.toHaveBeenCalled();
+  });
+
+  it('schema broken (42703 undefined column): never dead-lettered, treated as blocking', async () => {
+    const s = setup({ write: async () => Promise.reject(pgErr('42703', 'column "x" does not exist')), retry: { transientWindowMs: 0 } });
+    await expect(handleBatch(s.ctx(msgs(2)), s.deps)).rejects.toBeInstanceOf(DbUnavailableError);
+    expect(s.dlq.publish).not.toHaveBeenCalled();
+    expect(s.stats.errorsByClass.SYSTEMIC_DB).toBe(1);
+  });
+
+  it('DLQ publish rejects: offset not resolved, not committed; rows already stored stay stored', async () => {
+    const s = setup({ maxRows: 1000, dlqPublish: async () => Promise.reject(new Error('NOT_ENOUGH_REPLICAS')) });
+    const c = s.ctx([...msgs(3), poison()]);
+    await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(DlqPublishError);
+    expect(c.resolveOffset).not.toHaveBeenCalled();
+    expect(c.commitOffsetsIfNecessary).not.toHaveBeenCalled();
+    expect(s.stats.inserted).toBe(3);
+    expect(s.stats.dlqErrors).toBe(1);
+  });
+
+  it('DLQ off: a row Postgres rejects blocks (the error propagates, nothing committed)', async () => {
+    const s = setup({ write: async () => Promise.reject(pgErr('22P05')), retry: { dlqEnabled: false } });
+    const c = s.ctx(msgs(2));
+    await expect(handleBatch(c, s.deps)).rejects.toMatchObject({ code: '22P05' });
+    expect(c.resolveOffset).not.toHaveBeenCalled();
+    expect(s.dlq.publish).not.toHaveBeenCalled();
   });
 });

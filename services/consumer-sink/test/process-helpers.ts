@@ -1,6 +1,7 @@
 // Helpers for tests that run consumer-sink as a real child process (so it can be SIGKILLed / SIGTERMed),
 // each against its own throw-away topic and consumer group.
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -42,8 +43,11 @@ export async function createTopic(partitions = 6): Promise<string> {
 
 export const deleteTopic = (topic: string) => withAdmin((a) => a.deleteTopics({ topics: [topic] })).catch(() => undefined);
 
-/** Produces n events (encoded like the API does, keyed by event_id so they spread over all partitions). */
-export async function produceEvents(topic: string, n: number): Promise<string[]> {
+/**
+ * Produces n events (encoded like the API does). Keyed by event_id so they spread over all partitions,
+ * unless `key` is given: then all go to that key's partition (a "busy" partition).
+ */
+export async function produceEvents(topic: string, n: number, opts: { key?: string } = {}): Promise<string[]> {
   const producer = kafka().producer({ kafkaJS: { acks: -1, idempotent: true }, 'linger.ms': 0 } as any);
   await producer.connect();
   const ids: string[] = [];
@@ -59,7 +63,7 @@ export async function produceEvents(topic: string, n: number): Promise<string[]>
           requestId: 'e2e',
           keyMode: 'event',
         });
-        return { key: e.key, value: e.value, headers: e.headers };
+        return { key: opts.key ?? e.key, value: e.value, headers: e.headers };
       });
       await producer.send({ topic, messages });
     }
@@ -74,7 +78,7 @@ export async function produceEvents(topic: string, n: number): Promise<string[]>
     await sleep(250);
     total = await logTotal();
   }
-  if (total !== n) throw new Error(`PRODUCE CHECK: producer acknowledged ${n} records but ${topic} holds ${total}`);
+  if (total < n) throw new Error(`PRODUCE CHECK: producer acknowledged ${n} records but ${topic} holds ${total}`);
   return ids;
 }
 
@@ -84,7 +88,8 @@ export async function groupOffsets(groupId: string, topic: string) {
     const ends = await a.fetchTopicOffsets(topic);
     const committed = await a.fetchOffsets({ groupId, topics: [topic] });
     const byPart = new Map((committed[0]?.partitions ?? []).map((p: any) => [p.partition, Number(p.offset)]));
-    return ends.map((e) => ({ partition: e.partition, committed: byPart.get(e.partition) ?? -1, end: Number(e.high) }));
+    // No commit yet (-1) means "start of the log": 0 for these fresh topics, so an empty partition counts as done.
+    return ends.map((e) => ({ partition: e.partition, committed: Math.max(0, Number(byPart.get(e.partition) ?? -1)), end: Number(e.high) }));
   });
 }
 
@@ -164,4 +169,46 @@ export function databaseUrlViaProxy(): string {
   u.hostname = 'localhost';
   u.port = '15434';
   return u.toString();
+}
+
+export const createTopicNamed = (topic: string, partitions: number) =>
+  withAdmin((a) =>
+    a.createTopics({
+      topics: [{ topic, numPartitions: partitions, replicationFactor: 3, configEntries: [{ name: 'min.insync.replicas', value: '2' }] }],
+    }),
+  ).then(() => topic);
+
+/** scripts/produce-poison.sh --kind KIND --key KEY --topic TOPIC (runs the console producer in ep-kafka1). */
+export async function producePoison(kind: string, key: string, topic: string): Promise<void> {
+  await promisify(execFile)(resolve(import.meta.dirname, '../../../scripts/produce-poison.sh'), ['--kind', kind, '--key', key, '--topic', topic]);
+}
+
+export interface TopicRecord {
+  partition: number;
+  offset: string;
+  key: string | null;
+  value: Buffer | null;
+  headers: Record<string, string>;
+}
+
+/** Reads a topic from the beginning with a throw-away group for up to timeoutMs (or until `until` is true). */
+export async function readTopic(topic: string, timeoutMs: number, until: (r: TopicRecord[]) => boolean = () => false): Promise<TopicRecord[]> {
+  const consumer = kafka().consumer({ kafkaJS: { groupId: `read-${randomUUID()}`, fromBeginning: true, autoCommit: false } });
+  const out: TopicRecord[] = [];
+  await consumer.connect();
+  try {
+    await consumer.subscribe({ topics: [topic] });
+    await consumer.run({
+      eachMessage: async ({ partition, message }) => {
+        const headers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(message.headers ?? {})) headers[k] = String(Array.isArray(v) ? v[0] : v);
+        out.push({ partition, offset: message.offset, key: message.key?.toString() ?? null, value: message.value, headers });
+      },
+    });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline && !until(out)) await sleep(200);
+    return out;
+  } finally {
+    await consumer.disconnect();
+  }
 }

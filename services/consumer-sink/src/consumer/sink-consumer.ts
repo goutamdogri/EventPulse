@@ -17,6 +17,7 @@ import type { AppConfig } from '../config.js';
 import { PG_POOL } from '../db/db.module.js';
 import { SinkStats } from '../observability/sink-stats.js';
 import { BatchWriter } from '../sink/batch-writer.js';
+import { DlqPublisher } from '../sink/dlq-publisher.js';
 import { handleBatch } from './batch-handler.js';
 import { FaultInjector } from './fault-injector.js';
 
@@ -42,6 +43,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly consumer: Consumer;
   private readonly writer: BatchWriter;
   private readonly faults: FaultInjector;
+  private readonly dlq: DlqPublisher;
+  private readonly resumeTimers = new Set<NodeJS.Timeout>();
   private assignedOnce!: Promise<void>;
   private markAssigned!: () => void;
   private running = false;
@@ -53,6 +56,10 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   ) {
     this.writer = new BatchWriter(pool);
     this.faults = new FaultInjector(cfg.faults);
+    this.dlq = new DlqPublisher(cfg.kafka, cfg.retry.dlqTopic, { sourceTopic: cfg.consumer.topic, groupId: cfg.consumer.groupId });
+    if (!cfg.retry.dlqEnabled) {
+      this.log.warn('SINK_DLQ_ENABLED=false: a poison record will block its partition (S2-F3 behavior)');
+    }
     if (cfg.faults.crashAt !== 'none') {
       this.log.warn(`DEBUG FAULT ARMED: SIGKILL at ${cfg.faults.crashAt} on batch ${cfg.faults.crashAfterBatches}`);
     }
@@ -79,6 +86,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   }
 
   async onApplicationBootstrap() {
+    await this.dlq.connect();
     await this.consumer.connect();
     await this.consumer.subscribe({ topics: [this.cfg.consumer.topic] });
     await this.consumer.run({
@@ -101,6 +109,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               heartbeat: () => payload.heartbeat(),
               isRunning: () => payload.isRunning(),
               isStale: () => payload.isStale(),
+              pausePartition: (ms) => this.pausePartition(batch.topic, batch.partition, ms),
             },
             {
               writer: this.writer,
@@ -108,6 +117,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               maxRows: this.cfg.sink.maxRows,
               faults: this.faults,
               processingDelayMs: this.cfg.sink.processingDelayMs,
+              dlq: this.dlq,
+              retry: this.cfg.retry,
             },
           );
         } catch (e) {
@@ -134,8 +145,35 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   async beforeApplicationShutdown() {
     if (!this.running) return;
     this.running = false;
+    for (const t of this.resumeTimers) clearTimeout(t);
+    this.resumeTimers.clear();
     await this.consumer.disconnect();
+    await this.dlq.disconnect();
     this.log.log('left the group');
+  }
+
+  /**
+   * The DB is down: stop fetching this partition for ms, then resume. Its unresolved chunk is read again after
+   * the resume, so nothing is lost, and the consumer doesn't spin on a hot retry loop meanwhile.
+   */
+  private pausePartition(topic: string, partition: number, ms: number) {
+    const key = `${topic}:${partition}`;
+    if (this.stats.paused.has(key)) return;
+    this.consumer.pause([{ topic, partitions: [partition] }]);
+    this.stats.paused.add(key);
+    this.log.warn(`paused ${key} for ${ms} ms (database unavailable)`);
+    const t = setTimeout(() => {
+      this.resumeTimers.delete(t);
+      this.stats.paused.delete(key);
+      if (!this.running) return;
+      try {
+        this.consumer.resume([{ topic, partitions: [partition] }]);
+        this.log.log(`resumed ${key}`);
+      } catch (e) {
+        this.log.error(`resume ${key} failed: ${(e as Error).message}`);
+      }
+    }, ms);
+    this.resumeTimers.add(t);
   }
 
   private onRebalance(err: { code: number }, assignment: TopicPartition[]) {

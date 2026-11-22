@@ -32,6 +32,15 @@ describe('loadConfig', () => {
     expect(c.sink.processingDelayMs).toBe(200);
   });
 
+  it('poison-handling defaults and validation', () => {
+    expect(loadConfig(base).retry).toEqual({
+      dlqEnabled: true, dlqTopic: 'events.dlq', maxRetries: 3, baseMs: 100, maxMs: 5000, transientWindowMs: 20000, pauseMs: 5000,
+    });
+    expect(loadConfig({ ...base, SINK_DLQ_ENABLED: 'false', SINK_DLQ_TOPIC: 'd' }).retry).toMatchObject({ dlqEnabled: false, dlqTopic: 'd' });
+    expect(() => loadConfig({ ...base, SINK_TRANSIENT_RETRY_WINDOW_MS: '58000' })).toThrow(/REBALANCE_TIMEOUT/);
+    expect(() => loadConfig({ ...base, SINK_RETRY_BASE_MS: '9000' })).toThrow(/SINK_RETRY_BASE_MS/);
+  });
+
   it('requires DATABASE_URL', () => expect(() => loadConfig({})).toThrow(/DATABASE_URL/));
 
   it('refuses more concurrent partitions than pool connections', () =>
