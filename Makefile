@@ -24,3 +24,14 @@ stage2-consumer-start:
 	pnpm --filter @eventpulse/consumer-sink start:prod
 stage2-consumer-start-pinned:
 	pnpm --filter @eventpulse/consumer-sink start:pinned
+
+# One command for the whole pipeline (containers, topics, migrations, build, consumer, API) and its stop.
+stage2-up:
+	scripts/stage2-up.sh
+stage2-down:
+	scripts/stage2-down.sh
+stage2-lag:
+	scripts/lag.sh
+# S2-F7 audit: load + reconciliation. make stage2-audit RATE=500 DURATION=30s [RUN=a1b2c3d4]
+stage2-audit:
+	RATE=$(or $(RATE),200) DURATION=$(or $(DURATION),30s) $(if $(RUN),RUN_ID=$(RUN)) scripts/audit.sh run

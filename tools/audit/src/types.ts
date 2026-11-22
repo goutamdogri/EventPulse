@@ -1,0 +1,82 @@
+// Data shapes of the S2-F7 audit.
+
+export interface PartitionOffsets {
+  partition: number;
+  low: number; // log start offset (moves when retention deletes data)
+  high: number; // log end offset (next offset to be written)
+}
+
+export interface ApiStats {
+  url: string;
+  uptime_s: number;
+  acked: number; // ep_kafka_messages_acked_total
+  failed: number;
+  http_202: number;
+  by503: Record<string, number>;
+}
+
+export interface ConsumerStats {
+  url: string;
+  uptime_s: number;
+  consumed: number;
+  attempted: number;
+  inserted: number;
+  duplicates: number;
+  dlq: number;
+}
+
+export interface Snapshot {
+  taken_at: string;
+  topic: string;
+  dlq_topic: string;
+  group: string;
+  raw: PartitionOffsets[];
+  dlq: PartitionOffsets[];
+  committed: { partition: number; offset: number }[]; // -1 = never committed
+  db: { rows_total: number };
+  api: ApiStats | null;
+  consumers: ConsumerStats[];
+  notes: string[];
+}
+
+export interface K6Summary {
+  run_id?: string;
+  sent: number;
+  by_status: { '202': number; '4xx': number; '503': number; other: number };
+  network_errors: number;
+  retries_sent?: number;
+  dropped_iterations?: number;
+  latency_ms?: { p50: number | null; p99: number | null; max: number | null };
+}
+
+/** Facts measured once at the end of the run. */
+export interface RunFacts {
+  run_id: string;
+  rows_distinct: number; // distinct rows with this run's event_id prefix
+  freshness_p50_s: number | null;
+  freshness_p99_s: number | null;
+  dlq_new_total: number; // DLQ records added during the run (any origin, e.g. injected poison)
+  dlq_run: number; // ... of which carry this run's event_id prefix (API-acked events that were dead-lettered)
+  lag_end: number; // group lag summed over partitions after the drain wait
+  drained: boolean;
+  drain_waited_s: number;
+}
+
+export type CheckStatus = 'ok' | 'fail' | 'finding' | 'skipped' | 'not_drained';
+
+export interface Check {
+  id: string; // A..I
+  title: string;
+  status: CheckStatus;
+  critical: boolean; // a failed critical check means acknowledged data may be lost (or the numbers are invalid)
+  detail: string;
+}
+
+export interface AuditResult {
+  run_id: string;
+  result: 'RECONCILED' | 'NOT RECONCILED' | 'NOT DRAINED';
+  exit_code: 0 | 1 | 2;
+  numbers: Record<string, number | null>;
+  checks: Check[];
+  findings: string[];
+}

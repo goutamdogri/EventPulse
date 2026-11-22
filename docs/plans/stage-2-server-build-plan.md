@@ -30,7 +30,8 @@ services/ingest-api/src/kafka/              # producer, micro-batcher, errors (s
 services/consumer-sink/                     # consumer, parser, batch writer, DLQ publisher (steps 2-4, 6)
 db/migrations/0004_events_stored_at.sql     # stored_at column for freshness (step 2)
 scripts/                                    # audit.sh, lag.sh, produce-poison.sh, dlq-peek.sh, ... (steps 4, 7)
-loadtests/k6/ingest-kafka.js                # minimal load script used by the audit (step 7)
+loadtests/k6/stage-2/ingest-kafka.js        # minimal load script used by the audit (step 7)
+tools/audit/                                # the audit implementation (step 7)
 docs/api-contract.md                        # what 202 means now (step 1)
 ```
 
@@ -612,9 +613,9 @@ The topic and table keep data across runs, so the audit works on **deltas** betw
   4. Counts distinct rows for this run. Because k6 uses run-scoped event ids (see B), this is an exact query: `SELECT count(DISTINCT event_id) FROM events WHERE event_id::text LIKE '<run_prefix>%'`, plus the freshness p50/p99 of those rows from `stored_at - received_at`.
   5. Prints a table and writes `audit-result.json`.
 - `scripts/audit.sh run -- <command>` = `start`, run the command (e.g. the k6 script), `end`. **This is the one command.**
-- Implementation: a bash wrapper calling a small Node/TS script (`tools/audit/` or `scripts/audit.mjs`) for the JSON math and table printing. Bash alone gets painful for this.
+- Implementation: a bash wrapper calling a small Node/TS script (`tools/audit/` or `scripts/audit.mjs`) for the JSON math and table printing. Bash alone gets painful for this. *Implemented as `tools/audit/` (TypeScript run by Node 24 directly; Kafka through the admin client instead of the CLI scripts, much faster than starting a JVM per call).*
 
-**B. Run-scoped event ids in the load script (`loadtests/k6/ingest-kafka.js`)**
+**B. Run-scoped event ids in the load script (`loadtests/k6/stage-2/ingest-kafka.js`)**
 
 - Minimal k6 script (constant-arrival-rate, configurable `RATE`, `DURATION`, `TENANTS`, payload size) that reuses the Stage 1 event shape.
 - `event_id` = UUID whose first 8 hex chars are the run id (e.g. `RUN_ID=a1b2c3d4`), rest random. This keeps the UUID valid and lets the audit count exactly this run's rows.
@@ -625,11 +626,11 @@ The topic and table keep data across runs, so the audit works on **deltas** betw
 
 | Check | Rule | If violated |
 | --- | --- | --- |
-| A | `sent ≥ acked_202` (k6) | harness bug |
+| A | `sent ≥ acked_202` (k6) | harness bug (*implemented as critical: every other number is suspect*) |
 | B | `acked_202 (k6) == Δ ep_kafka_messages_acked_total (API)` | lost responses / counting bug |
 | C | `Δ Kafka end offsets (events.raw) ≥ acked_202` | **acknowledged but not in the log** → loss, critical |
 | D | `Δ Kafka end offsets − acked_202` = records written but not acknowledged (failed/timed-out batches, retries) | reported, not a failure |
-| E | `distinct rows for run == acked_202 − dlq_for_run` | below → **acknowledged but missing from Postgres** (loss, critical); above → rows from events that got a 503 but were actually written (expected, reported) |
+| E | `distinct rows for run == acked_202 − dlq_for_run` | below → **acknowledged but missing from Postgres** (loss, critical) *once drained; while not drained it is "not final" (see `notebook/fix/step-7.md` 7.1)*; above → rows from events that got a 503 but were actually written (expected, reported) |
 | F | `Δ consumed − Δ inserted − Δ dlq == Δ duplicates` | metrics bug |
 | G | `Δ duplicates` (reprocessed messages absorbed by `ON CONFLICT`) | reported as a number, never hidden |
 | H | log start offset moved during the run (retention deleted unread data) | reported as a finding |
@@ -659,7 +660,7 @@ Exit code: 0 if reconciled, 1 if any critical check (C, E-below, B) fails, 2 if 
 - `kill-broker.sh` / `kill-consumer.sh`: thin `docker kill` / `kill -9` helpers with a "which broker leads partition X" lookup. They're tiny and the PRD lists them in the repo additions, but the experiments that use them are out of scope here.
 - `Makefile`:
   - `stage2-up`: Postgres + Kafka compose up, wait healthy, run migrations, start consumer and API. **"Pipeline runs with one command"** (exit criterion).
-  - `stage2-down`
+  - `stage2-down` (stops the two Node processes; containers keep running, they are shared with other stages)
   - `stage2-audit RUN=... RATE=... DURATION=...` → `scripts/audit.sh run -- k6 run loadtests/k6/ingest-kafka.js`
 
 ### 7.2 What to cover
