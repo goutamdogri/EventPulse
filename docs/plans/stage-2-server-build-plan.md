@@ -431,13 +431,13 @@ The key design point: a down database must not dump every message into the DLQ. 
 - **Per-send timeout:** `KAFKA_SEND_TIMEOUT_MS` (e.g. 5 s). Wrap each `producer.send` in a timeout so a hung broker can't hold waiters forever. On timeout, reject every waiter with `KafkaUnavailableError`. (Document: the send may still complete later, so a client retry can duplicate. That's another ledger entry.)
 - **Request wait cap:** a request never waits longer than `queue wait + send timeout`. Add an end-to-end test for that.
 - **Fail fast when Kafka is known down (simple circuit breaker):** after `KAFKA_BREAKER_FAILURES` consecutive failed sends, mark the producer `unavailable` for `KAFKA_BREAKER_COOLDOWN_MS`. While unavailable, `enqueue` rejects immediately with `KafkaUnavailableError` instead of filling the queue. After the cooldown, let one batch through as a probe; success closes the breaker. This turns an outage into fast 503s instead of slow ones and keeps memory flat.
-- **Unbounded mode for comparison (K10 needs it):** `BATCH_MAX_QUEUE=0` means "no bound" and also disables the breaker. Log a loud warning at startup. Default stays bounded.
+- **Unbounded mode for comparison (K10 needs it):** `BATCH_MAX_QUEUE=0` means "no bound" and also disables the breaker **and the send timeout / queue expiry** (otherwise the timeout silently caps the queue; see `notebook/fix/step-5.md` 5.8). Log a loud warning at startup. Default stays bounded.
 
 **D. Startup and reconnect without restart**
 
 - The API must start even if Kafka is down. `onModuleInit` tries to connect but does not crash the process; it schedules reconnect attempts with backoff.
 - If the client disconnects at runtime (all brokers killed), reconnect in the background. Verify whether your client reconnects on its own on the next send or needs an explicit `connect()`, and handle the case it doesn't.
-- `GET /health/ready`: 200 when the producer is connected and the breaker is closed, else 503. `GET /health/live` stays 200 while the process is healthy (don't let Kafka outages kill the process via liveness).
+- `GET /health/ready`: 200 when the producer is connected and the breaker is closed, else 503. `GET /health/live` stays 200 while the process is healthy (don't let Kafka outages kill the process via liveness). *Implemented as `/readyz` / `/healthz`, plus a background Kafka health check so readiness changes without user traffic (connected + recent passing check + breaker closed); see `notebook/fix/step-5.md` 5.7.*
 - Graceful shutdown with Kafka down: `drain()` has a deadline (`SHUTDOWN_DRAIN_TIMEOUT_MS`); waiters still queued at the deadline get 503, then exit.
 
 ### 5.2 What to cover

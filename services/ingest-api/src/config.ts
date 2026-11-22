@@ -37,8 +37,19 @@ export interface BatcherConfig {
   maxMessages: number;
   maxWaitMs: number;
   maxBytes: number;
+  /** 0 = unbounded mode (K10): also no byte bound, no breaker, no send timeout / queue expiry. */
   maxQueue: number;
+  /** 0 = unbounded. */
+  maxQueueBytes: number;
   maxInFlight: number;
+  /** Per-send timeout; also the cap on queue wait. */
+  sendTimeoutMs: number;
+}
+
+export interface BreakerConfig {
+  /** Consecutive failed sends that open the breaker. 0 = breaker disabled. */
+  failures: number;
+  cooldownMs: number;
 }
 
 export interface AppConfig {
@@ -50,6 +61,15 @@ export interface AppConfig {
   kafka: KafkaClientConfig;
   producer: ProducerConfig;
   batcher: BatcherConfig;
+  breaker: BreakerConfig;
+  /** Max wait for the first Kafka connection at startup before the API starts anyway and keeps retrying. */
+  startupWaitMs: number;
+  reconnectInitialMs: number;
+  reconnectMaxMs: number;
+  /** On SIGTERM, how long drain() may wait for Kafka before the remaining requests get 503. */
+  shutdownDrainTimeoutMs: number;
+  /** Background Kafka health check (drives readiness and the breaker). intervalMs 0 = off. */
+  health: { intervalMs: number; timeoutMs: number; minIsr: number };
   keyMode: KeyMode;
   /** events.raw unless overridden (KAFKA_TOPIC); e2e tests write to a throw-away topic, never to events.raw. */
   topic: string;
@@ -76,8 +96,25 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxMessages: envInt(env, 'BATCH_MAX_MESSAGES', 500, 1),
     maxWaitMs: envInt(env, 'BATCH_MAX_WAIT_MS', 5, 0),
     maxBytes: envInt(env, 'BATCH_MAX_BYTES', 900_000, 1),
-    maxQueue: envInt(env, 'BATCH_MAX_QUEUE', 10_000, 1),
+    maxQueue: envInt(env, 'BATCH_MAX_QUEUE', 10_000, 0),
+    maxQueueBytes: envInt(env, 'BATCH_MAX_QUEUE_BYTES', 64 * 1024 * 1024, 0),
     maxInFlight: envInt(env, 'BATCH_MAX_IN_FLIGHT', 1, 1),
+    sendTimeoutMs: envInt(env, 'KAFKA_SEND_TIMEOUT_MS', 5_000, 0),
+  };
+  const unbounded = batcher.maxQueue === 0;
+  if (unbounded) {
+    // K10 compares a truly unbounded queue with the bounded one. Every bound must go, including the send
+    // timeout: it also expires queued messages, which would silently cap the queue at about rate x timeout.
+    batcher.maxQueueBytes = 0;
+    batcher.sendTimeoutMs = 0;
+    console.warn(
+      '[config] WARNING: BATCH_MAX_QUEUE=0 = UNBOUNDED mode: no queue limit (count or bytes), no circuit breaker, ' +
+        'no send timeout / queue expiry. Memory is NOT bounded while Kafka is down. Use only for experiment K10.',
+    );
+  }
+  const breaker: BreakerConfig = {
+    failures: unbounded ? 0 : envInt(env, 'KAFKA_BREAKER_FAILURES', 3, 0),
+    cooldownMs: envInt(env, 'KAFKA_BREAKER_COOLDOWN_MS', 5_000, 1),
   };
   if (batcher.maxBytes > MAX_BATCH_BYTES_LIMIT) {
     throw new Error(`BATCH_MAX_BYTES must be <= ${MAX_BATCH_BYTES_LIMIT} (broker message.max.bytes)`);
@@ -99,6 +136,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ackTimeoutMs: envInt(env, 'KAFKA_ACK_TIMEOUT_MS', 30_000, 1),
     },
     batcher,
+    breaker,
+    startupWaitMs: envInt(env, 'KAFKA_STARTUP_WAIT_MS', 10_000, 0),
+    reconnectInitialMs: envInt(env, 'KAFKA_RECONNECT_INITIAL_MS', 500, 1),
+    reconnectMaxMs: envInt(env, 'KAFKA_RECONNECT_MAX_MS', 10_000, 1),
+    shutdownDrainTimeoutMs: envInt(env, 'SHUTDOWN_DRAIN_TIMEOUT_MS', 10_000, 0),
+    health: {
+      intervalMs: envInt(env, 'KAFKA_HEALTH_INTERVAL_MS', 2_000, 0),
+      timeoutMs: envInt(env, 'KAFKA_HEALTH_TIMEOUT_MS', 2_000, 1),
+      // acks=all needs min.insync.replicas (2) in-sync copies to accept a write; acks 0/1 only need a leader.
+      minIsr: envInt(env, 'KAFKA_HEALTH_MIN_ISR', acks === -1 ? 2 : 1, 1),
+    },
     keyMode: envEnum(env, 'KAFKA_KEY_MODE', KEY_MODES, 'tenant'),
     topic: env.KAFKA_TOPIC || TOPIC_EVENTS_RAW,
   };

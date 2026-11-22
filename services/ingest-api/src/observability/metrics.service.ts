@@ -9,6 +9,7 @@ import {
   collectDefaultMetrics,
 } from '@prometheus-io/client';
 import { BatcherService } from '../kafka/batcher.service.js';
+import { KafkaHealthService } from '../kafka/kafka-health.service.js';
 import { ProducerService } from '../kafka/producer.service.js';
 
 @Injectable()
@@ -26,6 +27,7 @@ export class MetricsService {
   constructor(
     private readonly batcher: BatcherService,
     private readonly producer: ProducerService,
+    private readonly health: KafkaHealthService,
   ) {
     const registers = [this.registry];
     collectDefaultMetrics({ register: this.registry });
@@ -81,6 +83,12 @@ export class MetricsService {
     });
   }
 
+  /** 503s by reason (overloaded | kafka_unavailable). Full Prometheus series arrive with S2-F6. */
+  readonly by503: Record<string, number> = {};
+  count503(reason: string) {
+    this.by503[reason] = (this.by503[reason] ?? 0) + 1;
+  }
+
   middleware() {
     return (req: Request, res: Response, next: NextFunction) => {
       const start = process.hrtime.bigint();
@@ -123,7 +131,14 @@ export class MetricsService {
       uptime_s: Math.round((Date.now() - this.startedAt) / 1000),
       // Stage 2: the request path ends at Kafka. Full producer/batcher metrics arrive with S2-F6.
       batcher: this.batcher.stats(),
-      producer: { connected: this.producer.isConnected(), ...this.producer.settings() },
+      producer: {
+        connected: this.producer.isConnected(),
+        breaker: this.batcher.breaker.state(),
+        errors_by_type: { ...this.producer.errorsByType },
+        ...this.producer.settings(),
+      },
+      kafka_health: this.health.snapshot(),
+      http_503_by_reason: { ...this.by503 },
       // Note: this histogram is reset on every Prometheus scrape, so these are "since last scrape".
       event_loop_delay_ms: {
         p50: this.loop.percentile(50) / 1e6,

@@ -25,9 +25,18 @@
 | **202** `{ "event_id": "..." }` | The event is **durably appended to the replicated log** (`events.raw`) under the configured acks policy. See below. |
 | 400 | Body failed validation or is not valid JSON. Nothing was written. |
 | 401 | Missing or unknown API key. Nothing was written. |
-| 413 | Body larger than `BODY_LIMIT`. Rejected at the edge, Kafka never sees it. |
-| 500 | Unexpected error, including (until S2-F5 lands) a failed Kafka write or a full ingest queue. The event **may or may not** have been written. |
-| 503 + `Retry-After` | *(S2-F5)* Kafka unavailable or ingest overloaded. The event may or may not have been written. |
+| 413 | Body larger than `BODY_LIMIT` (rejected at the edge, Kafka never sees it), or an event larger than the batch byte cap. |
+| 500 | Unexpected error (a bug). The event **may or may not** have been written. |
+| 503 + `Retry-After` | Kafka unavailable, or the ingest queue is full. Body: `{ statusCode: 503, error, message, reason }` with `reason` = `kafka_unavailable`, `overloaded` or `shutting_down`. The event **may or may not** have been written (a timed-out or failed batch can be partly in the log). |
+
+### 503 in detail (S2-F5)
+
+- `reason: "kafka_unavailable"`: Kafka cannot take the write now (all brokers down, fewer in-sync replicas than `min.insync.replicas`, send timeout, circuit breaker open). After `KAFKA_BREAKER_FAILURES` failed sends the API answers immediately instead of waiting for the send timeout, and probes Kafka again after `KAFKA_BREAKER_COOLDOWN_MS`. The API needs no restart when Kafka returns.
+- `reason: "overloaded"`: the in-memory ingest queue is full (`BATCH_MAX_QUEUE` messages or `BATCH_MAX_QUEUE_BYTES`) while Kafka may be healthy.
+- `reason: "shutting_down"`: this instance received SIGTERM and is draining its queue; retry (another instance, or this one after its restart).
+- `Retry-After: RETRY_AFTER_S` seconds (default 1).
+- A request never waits longer than the queue wait plus `KAFKA_SEND_TIMEOUT_MS` (default 5 s).
+- Readiness `GET /readyz` is 200 only when the producer is connected, a background Kafka health check (every `KAFKA_HEALTH_INTERVAL_MS`, default 2 s: every partition has a leader and enough in-sync replicas for `acks=all`) passed recently, and the breaker is closed. It follows Kafka in both directions without needing any traffic. Liveness `GET /healthz` stays 200.
 
 ## What 202 means now
 

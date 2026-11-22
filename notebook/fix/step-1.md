@@ -55,13 +55,13 @@
 | idempotent, produce right after `createTopics` (diagnostic with read-back) | 80 | 1 | 4,998 / 5,000, **still 4,998 after 3 s**, read back 4,998, missing seq **2 and 11**: both in the **first batch** |
 | idempotent, **3 s wait** after `createTopics` | 80 | 0 | |
 | **non-idempotent**, produce right after `createTopics` | 100 | 0 | |
-| idempotent, `waitTopicReady` (leaders + full ISR + 2 s) | READY_RUNS | READY_MISMATCHES | READY_DETAILS |
+| idempotent, `waitTopicReady` (leaders + full ISR + 2 s) | 150 | 0 | the mitigation used by the tests |
 
 What the data says:
 - It is **real loss, not a measurement artifact**: the records were missing after 3 s and when the topic was read back.
 - It only happened when producing **into a topic created moments before**, and the lost records were among the **very first** sent to it (sequence numbers 2 and 11 out of 5,000).
 - It happened only with the **idempotent** producer (3 cases in about 160 idempotent runs without a wait, 0 in 100 non-idempotent runs).
-- Waiting after creation made it disappear in the runs made (0 in 80).
+- Waiting after creation made it disappear: 0 in 80 runs with a fixed 3 s wait, and **0 in 150 runs** with `waitTopicReady` (the mitigation now used by the tests). Without a wait the rate was about 1 run in 60.
 
 **Fix / mitigation.**
 - Production: `events.raw` and `events.dlq` are created by `kafka-init` before any client starts, and nothing in the app creates topics (`auto.create.topics.enable=false`, `allowAutoTopicCreation: false`). The window in which records were lost doesn't exist on the API's path.

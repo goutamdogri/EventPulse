@@ -68,6 +68,19 @@ A second path made it worse: `sink-consumer.e2e-spec.ts` produced its records in
 
 ---
 
-## Still open: existing test rows in the dev database
+## Cleanup of the test rows already in the dev database (done, approved)
 
-About 353,000 test rows (`sink_e2e_proc`, `sink_e2e`, `writer_e2e`) are still in `eventpulse.events`. Removing them is a `DELETE` plus `VACUUM` that can't be undone, so it waits for an explicit go-ahead. `tenant_a` rows can't be separated (Stage 1 load tests and older API e2e runs both used that tenant), so they would stay.
+On 2026-11-22, with explicit approval, the test rows were removed from `eventpulse.events` (nothing else was using the database at the time):
+
+```sql
+BEGIN; DELETE FROM events WHERE tenant_id IN ('sink_e2e_proc','sink_e2e','writer_e2e'); COMMIT;
+VACUUM (FULL, ANALYZE) events;   -- rewrite the table so its size is real again, refresh planner stats
+```
+
+| | before | after |
+| --- | --- | --- |
+| rows | 863,079 | 508,648 |
+| rows deleted | | 354,431 (`sink_e2e_proc` 344,513, `sink_e2e` 8,700, `writer_e2e` 1,218) |
+| `pg_total_relation_size('events')` | 310 MB | 247 MB |
+
+`VACUUM FULL` rather than plain `VACUUM` because plain vacuum only marks the space reusable: the table and index files would have stayed at 310 MB, and Stage 2 benchmarks compare against a table size. The `tenant_a` rows were kept: Stage 1 load tests and older API e2e runs share that tenant, so they can't be told apart.

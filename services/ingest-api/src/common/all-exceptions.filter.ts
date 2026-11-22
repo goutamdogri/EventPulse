@@ -5,6 +5,8 @@ import {
   HttpException,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { KafkaUnavailableError, OverloadedError } from '../kafka/errors.js';
+import { BatcherClosedError, MessageTooLargeError } from '../kafka/micro-batcher.js';
 import { MetricsService } from '../observability/metrics.service.js';
 
 @Catch()
@@ -29,7 +31,27 @@ export class AllExceptionsFilter implements ExceptionFilter {
         message: err.message,
       });
     }
-    // Kafka failures (and a full batcher queue) are still 500 here: mapping them to 503 + Retry-After is S2-F5.
+    // Event larger than the batch byte cap (only reachable if BODY_LIMIT is raised above it): the client's
+    // fault, never retryable, so 413 like the edge limit, not 500.
+    if (err instanceof MessageTooLargeError) {
+      return res.status(413).json({ statusCode: 413, error: 'Payload Too Large', message: err.message });
+    }
+    // Kafka unavailable, ingest queue full, or the instance is shutting down (SIGTERM drain in progress):
+    // 503 + Retry-After. The client retries with the same event_id (another instance, or this one restarted).
+    if (err instanceof OverloadedError || err instanceof KafkaUnavailableError || err instanceof BatcherClosedError) {
+      const reason =
+        err instanceof OverloadedError ? 'overloaded' : err instanceof BatcherClosedError ? 'shutting_down' : 'kafka_unavailable';
+      this.m.count503(reason);
+      return res
+        .status(503)
+        .set('Retry-After', String(this.retryAfterS))
+        .json({
+          statusCode: 503,
+          error: 'Service Unavailable',
+          message: 'Ingest temporarily unavailable',
+          reason,
+        });
+    }
     console.error('[unhandled]', err);
     return res
       .status(500)
