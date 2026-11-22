@@ -4,3 +4,5 @@ packages:
   - "packages/*"
   - "labs/stage-0-foundations"
   - "tools/*"
+allowBuilds:
+  '@confluentinc/kafka-javascript': true

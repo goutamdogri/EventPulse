@@ -10,6 +10,14 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:8000"]
 
+  # Stage 2 (S2-F6): consumer-sink instances (group sink-postgres). Default METRICS_PORT is 8001; give extra
+  # instances 8002, 8003 ... A target that isn't running just shows DOWN.
+  - job_name: eventpulse-consumer-sink
+    scrape_interval: 1s
+    scrape_timeout: 1s
+    static_configs:
+      - targets: ["host.docker.internal:8001", "host.docker.internal:8002", "host.docker.internal:8003"]
+
   # node_exporter runs with network_mode: host, so it is NOT reachable as "node-exporter".
   - job_name: node
     static_configs:

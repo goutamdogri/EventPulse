@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Stop the ingest-api and consumer-sink started by scripts/stage2-up.sh (SIGTERM: graceful drain and commit).
+# Containers keep running (they are shared with other stages): make stage2-kafka-down stops the brokers.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+for name in ingest-api consumer-sink; do
+  f=".run/$name.pid"
+  [ -f "$f" ] || { echo "$name: not started by stage2-up"; continue; }
+  pid=$(cat "$f")
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid"
+    for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$pid" 2>/dev/null && { echo "$name did not stop in 15 s, sending SIGKILL"; kill -KILL "$pid"; }
+    echo "$name stopped"
+  else
+    echo "$name: not running"
+  fi
+  rm -f "$f"
+done

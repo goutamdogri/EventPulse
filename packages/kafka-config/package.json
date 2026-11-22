@@ -1,0 +1,28 @@
+{
+  "name": "@eventpulse/kafka-config",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Shared Kafka topic names, client factory, env parsing and message envelope for EventPulse services.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "1.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}
