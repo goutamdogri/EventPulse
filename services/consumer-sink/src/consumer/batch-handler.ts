@@ -94,6 +94,8 @@ export interface HandlerDeps {
   faults: Pick<FaultInjector, 'startBatch' | 'hit'>;
   /** SINK_PROCESSING_DELAY_MS: artificial work per chunk, before the DB write (tests, K8). */
   processingDelayMs: number;
+  /** K8: limits the delay to a window of chunks (skip the first `skip`, delay the next `left`). Absent = delay every chunk. */
+  delayWindow?: { skip: number; left: number };
   dlq: DlqSink;
   retry: RetryPolicy;
   sleep?: (ms: number) => Promise<void>;
@@ -176,7 +178,16 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
   }
   faults.hit('after_parse', part.length);
 
-  if (deps.processingDelayMs > 0) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
+  if (deps.processingDelayMs > 0) {
+    const w = deps.delayWindow;
+    let delay = true;
+    if (w) {
+      if (w.skip > 0) { w.skip--; delay = false; }
+      else if (w.left > 0) w.left--;
+      else delay = false;
+    }
+    if (delay) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
+  }
 
   const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
   faults.hit('after_db_commit', part.length);

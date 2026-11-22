@@ -90,6 +90,7 @@ Measured with real SIGKILLs (`test/commit-protocol.e2e-spec.ts`, 5,000 events, c
 
 - `CRASH_AT=before_parse|after_parse|after_db_commit` with `CRASH_AFTER_BATCHES=N`: SIGKILL this process at that point on its Nth batch. Refused unless `DEBUG_FAULTS=true`.
 - `SINK_PROCESSING_DELAY_MS`: artificial work per chunk, before the DB write.
+- `SINK_PROCESSING_DELAY_CHUNKS` / `SINK_PROCESSING_DELAY_SKIP_CHUNKS` (K8): delay only that many chunks (0 = every chunk), after skipping the first N.
 - `CONSUMER_TOPIC`: read another topic (tests use a throw-away topic per run).
 
 ## Poison messages and the DLQ (S2-F4)

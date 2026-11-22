@@ -217,6 +217,14 @@ describe('handleBatch: offsets committed only after the DB commit', () => {
     expect(s.calls.slice(0, 2)).toEqual(['sleep', 'write:1']);
   });
 
+  it('delay window: skips the first chunks, delays the next ones, then stops', async () => {
+    const s = setup();
+    const sleep = vi.fn(async () => undefined);
+    const delayWindow = { skip: 1, left: 2 };
+    for (let i = 0; i < 5; i++) await handleBatch(s.ctx(msgs(1)), { ...s.deps, processingDelayMs: 50, sleep, delayWindow });
+    expect(sleep).toHaveBeenCalledTimes(2); // chunk 1 skipped, chunks 2 and 3 delayed, chunks 4 and 5 not
+  });
+
   it('empty batch is a no-op', async () => {
     const s = setup();
     await handleBatch(s.ctx([]), s.deps);

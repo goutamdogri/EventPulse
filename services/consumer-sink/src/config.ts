@@ -48,6 +48,9 @@ export interface AppConfig {
   sink: {
     maxRows: number;
     processingDelayMs: number;
+    /** K8: delay only this many chunks (0 = every chunk), after skipping the first `delaySkipChunks`. */
+    delayChunks: number;
+    delaySkipChunks: number;
     /** K5 (debug-only): false = plain INSERT into dedupTable, so a reprocessed row is stored twice. */
     dedup: boolean;
     dedupTable: string;
@@ -136,6 +139,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     sink: {
       maxRows: envInt(env, 'SINK_MAX_ROWS', 1000, 1),
       processingDelayMs: envInt(env, 'SINK_PROCESSING_DELAY_MS', 0, 0),
+      delayChunks: envInt(env, 'SINK_PROCESSING_DELAY_CHUNKS', 0, 0),
+      delaySkipChunks: envInt(env, 'SINK_PROCESSING_DELAY_SKIP_CHUNKS', 0, 0),
       dedup,
       dedupTable: env.SINK_NODEDUP_TABLE || 'events_nodedup',
     },

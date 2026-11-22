@@ -74,6 +74,20 @@ describe('consumer metrics (S2-F6)', () => {
     expect(metric(text, 'ep_consumer_commit_seconds_count')).toBe(2);
   });
 
+  it('K8: revokes are counted and the gap runs from the revoke to the next assign', async () => {
+    const registry = new Registry();
+    const stats = new SinkStats(registry);
+    stats.closeRebalanceGap(1000); // first join: no revoke before it, nothing recorded
+    stats.countRevoke(6, 2000);
+    stats.countRevoke(1, 2500); // a second revoke before the assign keeps the first timestamp
+    stats.closeRebalanceGap(5000);
+    const text = await registry.metrics();
+    expect(metric(text, 'ep_consumer_revokes_total')).toBe(2);
+    expect(metric(text, 'ep_consumer_partitions_revoked_total')).toBe(7);
+    expect(metric(text, 'ep_consumer_rebalance_gap_seconds_count')).toBe(1);
+    expect(metric(text, 'ep_consumer_rebalance_gap_seconds_sum')).toBe(3);
+  });
+
   it('a failed chunk attempt counts as a chunk failure, not as consumed', async () => {
     const stats = new SinkStats();
     const d = deps(stats, 0);

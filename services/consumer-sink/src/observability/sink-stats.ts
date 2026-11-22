@@ -47,6 +47,7 @@ export class SinkStats {
   lastCommitMs?: number;
   stoppedEarly = 0;
   rebalances = 0;
+  private revokedAtMs: number | undefined;
   dlq = 0;
   dlqErrors = 0;
   isolations = 0;
@@ -125,6 +126,20 @@ export class SinkStats {
   countRebalance() {
     this.rebalances++;
     this.m.rebalances.inc();
+  }
+
+  /** K8: a revoke callback arrived. The gap timer runs until the next assign callback. */
+  countRevoke(partitions: number, nowMs: number = Date.now()) {
+    this.m.revokes.inc();
+    this.m.revokedPartitions.inc(partitions);
+    this.revokedAtMs ??= nowMs;
+  }
+
+  /** K8: an assign callback arrived; closes the gap opened by a revoke (nothing is recorded for the first join). */
+  closeRebalanceGap(nowMs: number = Date.now()) {
+    if (this.revokedAtMs === undefined) return;
+    this.m.rebalanceGap.observe((nowMs - this.revokedAtMs) / 1000);
+    this.revokedAtMs = undefined;
   }
 
   countError(c: ErrorClass, n = 1) {
@@ -240,6 +255,10 @@ function createMetrics(registry: Registry, st: SinkStats, live?: () => { pgTotal
     retries: new Counter({ name: 'ep_consumer_retries_total', help: 'Retries, by error class.', labelNames: ['class'], registers }),
     commitErrors: new Counter({ name: 'ep_consumer_commit_errors_total', help: 'Failed offset commit attempts.', registers }),
     rebalances: new Counter({ name: 'ep_consumer_rebalances_total', help: 'Partition assignments received (group joins).', registers }),
+    // K8: what a rebalance takes away from this member and how long it was without partitions.
+    revokes: new Counter({ name: 'ep_consumer_revokes_total', help: 'Revoke callbacks received (a rebalance took partitions away from this member).', registers }),
+    revokedPartitions: new Counter({ name: 'ep_consumer_partitions_revoked_total', help: 'Partitions revoked from this member (eager revokes all it owns, cooperative only the moved ones).', registers }),
+    rebalanceGap: new Histogram({ name: 'ep_consumer_rebalance_gap_seconds', help: 'Time from a revoke callback to the next assign callback of this member.', buckets: SECONDS_BUCKETS, registers }),
     batchSize: new Histogram({ name: 'ep_consumer_batch_size_messages', help: 'Messages per Kafka batch (kind=batch) and per chunk (kind=chunk).', labelNames: ['kind'], buckets: SIZE_BUCKETS, registers }),
     processing: new Histogram({ name: 'ep_consumer_batch_processing_seconds', help: 'Whole chunk: parse + write + DLQ + offset commit.', buckets: SECONDS_BUCKETS, registers }),
     dbWrite: new Histogram({ name: 'ep_consumer_db_write_seconds', help: 'One write transaction (BEGIN..COMMIT).', buckets: SECONDS_BUCKETS, registers }),

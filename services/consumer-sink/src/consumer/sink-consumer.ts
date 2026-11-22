@@ -48,6 +48,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly lag: LagMonitor;
   private readonly resumeTimers = new Set<NodeJS.Timeout>();
   private assignedOnce!: Promise<void>;
+  /** K8: only some chunks get SINK_PROCESSING_DELAY_MS (shared by every eachBatch call of this member). */
+  private delayWindow?: { skip: number; left: number };
   private markAssigned!: () => void;
   private running = false;
 
@@ -69,6 +71,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     if (cfg.faults.crashAt !== 'none') {
       this.log.warn(`DEBUG FAULT ARMED: SIGKILL at ${cfg.faults.crashAt} on batch ${cfg.faults.crashAfterBatches}`);
     }
+    if (cfg.sink.delayChunks > 0) this.delayWindow = { skip: cfg.sink.delaySkipChunks, left: cfg.sink.delayChunks };
     this.assignedOnce = new Promise((r) => (this.markAssigned = r));
     const c = cfg.consumer;
     this.consumer = createKafka(cfg.kafka).consumer({
@@ -128,6 +131,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               maxRows: this.cfg.sink.maxRows,
               faults: this.faults,
               processingDelayMs: this.cfg.sink.processingDelayMs,
+              delayWindow: this.delayWindow,
               dlq: this.dlq,
               retry: this.cfg.retry,
             },
@@ -193,10 +197,12 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     const parts = assignment.map((tp) => `${tp.topic}:${tp.partition}`);
     if (err.code === RdKafkaErrors.ERR__ASSIGN_PARTITIONS) {
       this.stats.countRebalance();
+      this.stats.closeRebalanceGap();
       parts.forEach((p) => this.stats.assigned.add(p));
       this.log.log(`assigned ${parts.join(', ') || '(none)'}; now own ${[...this.stats.assigned].sort().join(', ') || '(none)'}`);
       if (assignment.length > 0) this.markAssigned();
     } else if (err.code === RdKafkaErrors.ERR__REVOKE_PARTITIONS) {
+      this.stats.countRevoke(parts.length);
       parts.forEach((p) => this.stats.assigned.delete(p));
       this.log.log(`revoked ${parts.join(', ') || '(none)'}`);
     }
