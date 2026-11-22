@@ -40,6 +40,7 @@ export class KafkaMetrics {
   readonly acked: Counter<string>;
   readonly failed: Counter<string>;
   readonly http503: Counter<string>;
+  readonly clientTxBytes: Counter<string>;
 
   // Plain mirrors for a cheap, synchronous-ish /debug/stats.
   private readonly flushes: Record<string, number> = {};
@@ -55,6 +56,7 @@ export class KafkaMetrics {
     queueBytes: 0,
     brokers: {},
   };
+  private lastTxBytes = 0; // librdkafka's tx_bytes is cumulative; the counter gets the delta
   private live?: LiveSources;
 
   constructor(registry: Registry) {
@@ -90,6 +92,8 @@ export class KafkaMetrics {
     this.acked = new Counter({ name: 'ep_kafka_messages_acked_total', help: 'Messages acknowledged by Kafka (used by the S2-F7 audit).', registers });
     this.failed = new Counter({ name: 'ep_kafka_messages_failed_total', help: 'Messages in batches that failed or timed out.', registers });
     this.http503 = new Counter({ name: 'ep_http_503_total', help: '503 responses, by reason.', labelNames: ['reason'], registers });
+
+    this.clientTxBytes = new Counter({ name: 'ep_kafka_client_tx_bytes_total', help: 'Bytes the producer sent to the brokers on the wire, after compression (client statistics tx_bytes, updated every stats interval).', registers });
 
     // Known label values start at 0, so a clean run shows 0 on the dashboard instead of "No data".
     for (const reason of ['overloaded', 'breaker_open', 'too_large', 'closed', 'queue_timeout']) this.rejected.inc({ reason }, 0);
@@ -174,6 +178,10 @@ export class KafkaMetrics {
           inFlight: b.waitresp_cnt ?? 0,
         };
       }
+      const tx = typeof s.tx_bytes === 'number' ? s.tx_bytes : 0;
+      if (tx >= this.lastTxBytes) this.clientTxBytes.inc(tx - this.lastTxBytes); // a new client after a reconnect restarts at 0
+      else this.clientTxBytes.inc(tx);
+      this.lastTxBytes = tx;
       this.client = { queueMessages: s.msg_cnt ?? 0, queueBytes: s.msg_size ?? 0, brokers };
     } catch {
       /* malformed stats: keep the previous values */

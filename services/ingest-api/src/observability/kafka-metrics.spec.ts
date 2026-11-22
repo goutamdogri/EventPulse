@@ -89,7 +89,9 @@ describe('KafkaMetrics (S2-F6)', () => {
     const { registry, m } = setup();
     m.count503('kafka_unavailable');
     m.count503('shutting_down');
-    m.onClientStats(JSON.stringify({ msg_cnt: 42, msg_size: 4200, brokers: {
+    m.onClientStats(JSON.stringify({ tx_bytes: 1000 }));
+    m.onClientStats(JSON.stringify({ tx_bytes: 1500 }));
+    m.onClientStats(JSON.stringify({ tx_bytes: 1500, msg_cnt: 42, msg_size: 4200, brokers: {
       'localhost:9092/1': { nodeid: 1, rtt: { p50: 1500, p99: 9000 }, waitresp_cnt: 2 },
       'GroupCoordinator': { nodeid: -1 },
     } }));
@@ -97,6 +99,7 @@ describe('KafkaMetrics (S2-F6)', () => {
     const text = await registry.metrics();
     expect(text).toContain('ep_http_503_total{reason="kafka_unavailable"} 1');
     expect(text).toContain('ep_http_503_total{reason="shutting_down"} 1');
+    expect(text).toContain('ep_kafka_client_tx_bytes_total 1500');
     expect(text).toContain('ep_kafka_client_queue_messages 42');
     expect(text).toContain('ep_kafka_broker_rtt_seconds{broker="1",quantile="0.99"} 0.009');
     expect(text).toContain('ep_kafka_broker_in_flight_requests{broker="1"} 2');
