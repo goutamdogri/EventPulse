@@ -14,8 +14,8 @@ export class HealthController {
   // Readiness: joined the group. A member with zero partitions is still ready (it is a standby).
   @Get('readyz')
   readyz() {
-    const st = this.consumer.stats.snapshot();
-    if (st.rebalances > 0) return { ok: true, assigned_partitions: st.assigned_partitions };
+    const st = this.consumer.stats;
+    if (st.rebalances > 0) return { ok: true, assigned_partitions: [...st.assigned].sort() };
     throw new ServiceUnavailableException({ ok: false, reason: 'not yet joined the group' });
   }
 }

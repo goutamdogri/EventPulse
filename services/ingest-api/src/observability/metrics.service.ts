@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import type { NextFunction, Request, Response } from 'express';
 import {
@@ -11,10 +11,12 @@ import {
 import { BatcherService } from '../kafka/batcher.service.js';
 import { KafkaHealthService } from '../kafka/kafka-health.service.js';
 import { ProducerService } from '../kafka/producer.service.js';
+import { CONFIG } from '../config.js';
+import type { AppConfig } from '../config.js';
+import { KafkaMetrics } from './kafka-metrics.js';
 
 @Injectable()
 export class MetricsService {
-  readonly registry = new Registry();
   private readonly startedAt = Date.now();
   private readonly loop = monitorEventLoopDelay({ resolution: 10 });
 
@@ -25,11 +27,21 @@ export class MetricsService {
   readonly connTotal: Counter<string>;
 
   constructor(
+    readonly registry: Registry,
+    private readonly kafka: KafkaMetrics,
     private readonly batcher: BatcherService,
     private readonly producer: ProducerService,
     private readonly health: KafkaHealthService,
+    @Inject(CONFIG) private readonly cfg: AppConfig,
   ) {
     const registers = [this.registry];
+    // Live values (queue gauges, breaker, connection, health) are read at scrape / snapshot time.
+    kafka.bind({
+      batcher: () => batcher.stats(),
+      breaker: () => batcher.breaker.state(),
+      connected: () => producer.isConnected(),
+      healthy: () => health.healthy(),
+    });
     collectDefaultMetrics({ register: this.registry });
     this.loop.enable();
 
@@ -83,10 +95,9 @@ export class MetricsService {
     });
   }
 
-  /** 503s by reason (overloaded | kafka_unavailable). Full Prometheus series arrive with S2-F6. */
-  readonly by503: Record<string, number> = {};
+  /** 503s by reason (overloaded | kafka_unavailable | shutting_down): ep_http_503_total + /debug/stats. */
   count503(reason: string) {
-    this.by503[reason] = (this.by503[reason] ?? 0) + 1;
+    this.kafka.count503(reason);
   }
 
   middleware() {
@@ -118,36 +129,50 @@ export class MetricsService {
     });
   }
 
+  /** /debug/stats (S2-F6 shape). Includes the effective config, so every result records its settings. */
   async snapshot() {
-    const byClass: Record<string, number> = {};
-
+    const byStatus: Record<string, number> = {};
+    let requests = 0;
     for (const v of (await this.httpRequests.get()).values) {
-      const k = `${String(v.labels.status)[0]}xx`;
-      byClass[k] = (byClass[k] ?? 0) + v.value;
+      const k = String(v.labels.status);
+      byStatus[k] = (byStatus[k] ?? 0) + v.value;
+      requests += v.value;
     }
-
     const inFlight = (await this.inFlight.get()).values[0]?.value ?? 0;
+    const k = await this.kafka.snapshot();
+    const mem = process.memoryUsage();
     return {
       uptime_s: Math.round((Date.now() - this.startedAt) / 1000),
-      // Stage 2: the request path ends at Kafka. Full producer/batcher metrics arrive with S2-F6.
-      batcher: this.batcher.stats(),
-      producer: {
-        connected: this.producer.isConnected(),
-        breaker: this.batcher.breaker.state(),
-        errors_by_type: { ...this.producer.errorsByType },
-        ...this.producer.settings(),
-      },
-      kafka_health: this.health.snapshot(),
-      http_503_by_reason: { ...this.by503 },
-      // Note: this histogram is reset on every Prometheus scrape, so these are "since last scrape".
+      memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external },
+      // This histogram is reset on every Prometheus scrape, so these are "since last scrape".
       event_loop_delay_ms: {
         p50: this.loop.percentile(50) / 1e6,
         p99: this.loop.percentile(99) / 1e6,
         max: this.loop.max / 1e6,
       },
-      in_flight: inFlight,
-      requests_by_status_class: byClass,
-      memory: process.memoryUsage(),
+      http: { requests, in_flight: inFlight, by_status: byStatus, '503_by_reason': k.http_503_by_reason },
+      batcher: k.batcher,
+      producer: k.producer,
+      kafka_health: this.health.snapshot(),
+      config: {
+        topic: this.cfg.topic,
+        acks: this.cfg.producer.acks,
+        compression: this.cfg.producer.compression,
+        idempotent: this.cfg.producer.idempotent,
+        linger_ms: this.cfg.producer.lingerMs,
+        delivery_timeout_ms: this.cfg.producer.deliveryTimeoutMs,
+        batch_max_messages: this.cfg.batcher.maxMessages,
+        batch_max_wait_ms: this.cfg.batcher.maxWaitMs,
+        batch_max_bytes: this.cfg.batcher.maxBytes,
+        batch_max_queue: this.cfg.batcher.maxQueue,
+        batch_max_queue_bytes: this.cfg.batcher.maxQueueBytes,
+        batch_max_in_flight: this.cfg.batcher.maxInFlight,
+        send_timeout_ms: this.cfg.batcher.sendTimeoutMs,
+        breaker_failures: this.cfg.breaker.failures,
+        breaker_cooldown_ms: this.cfg.breaker.cooldownMs,
+        key_mode: this.cfg.keyMode,
+        brokers: this.cfg.kafka.brokers,
+      },
     };
   }
 }

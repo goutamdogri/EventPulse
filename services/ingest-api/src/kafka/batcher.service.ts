@@ -1,6 +1,7 @@
 import { BeforeApplicationShutdown, Inject, Injectable } from '@nestjs/common';
 import { CONFIG } from '../config.js';
 import type { AppConfig } from '../config.js';
+import { KafkaMetrics } from '../observability/kafka-metrics.js';
 import { CircuitBreaker } from './breaker.js';
 import { MicroBatcher } from './micro-batcher.js';
 import type { BatchItem } from './micro-batcher.js';
@@ -17,12 +18,19 @@ export class BatcherService implements BeforeApplicationShutdown {
   constructor(
     @Inject(CONFIG) private readonly cfg: AppConfig,
     producer: ProducerService,
+    metrics: KafkaMetrics,
   ) {
     this.breaker = new CircuitBreaker(cfg.breaker.failures, cfg.breaker.cooldownMs);
     this.batcher = new MicroBatcher(
       producer.send,
       cfg.batcher,
-      { onReject: (r) => (this.rejected[r] = (this.rejected[r] ?? 0) + 1) },
+      {
+        onFlush: (r) => metrics.onFlush(r),
+        onReject: (r) => {
+          this.rejected[r] = (this.rejected[r] ?? 0) + 1;
+          metrics.onReject(r);
+        },
+      },
       this.breaker,
     );
   }

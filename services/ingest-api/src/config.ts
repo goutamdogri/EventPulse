@@ -68,6 +68,8 @@ export interface AppConfig {
   reconnectMaxMs: number;
   /** On SIGTERM, how long drain() may wait for Kafka before the remaining requests get 503. */
   shutdownDrainTimeoutMs: number;
+  /** librdkafka statistics interval for the client metrics (S2-F6). 0 = off. */
+  statsIntervalMs: number;
   /** Background Kafka health check (drives readiness and the breaker). intervalMs 0 = off. */
   health: { intervalMs: number; timeoutMs: number; minIsr: number };
   keyMode: KeyMode;
@@ -141,6 +143,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     reconnectInitialMs: envInt(env, 'KAFKA_RECONNECT_INITIAL_MS', 500, 1),
     reconnectMaxMs: envInt(env, 'KAFKA_RECONNECT_MAX_MS', 10_000, 1),
     shutdownDrainTimeoutMs: envInt(env, 'SHUTDOWN_DRAIN_TIMEOUT_MS', 10_000, 0),
+    statsIntervalMs: envInt(env, 'KAFKA_STATS_INTERVAL_MS', 5_000, 0),
     health: {
       intervalMs: envInt(env, 'KAFKA_HEALTH_INTERVAL_MS', 2_000, 0),
       timeoutMs: envInt(env, 'KAFKA_HEALTH_TIMEOUT_MS', 2_000, 1),

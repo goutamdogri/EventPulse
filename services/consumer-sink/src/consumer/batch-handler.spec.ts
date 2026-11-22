@@ -107,7 +107,7 @@ describe('handleBatch: offsets committed only after the DB commit', () => {
       'write:2', 'db-commit', `resolve:${ms[1].offset}`, 'kafka-commit', 'heartbeat',
       'write:1', 'db-commit', `resolve:${ms[2].offset}`, 'kafka-commit', 'heartbeat',
     ]);
-    expect(s.stats.snapshot()).toMatchObject({ consumed: 3, inserted: 3, chunks: 2, commits: 2, batches: 1 });
+    expect(await s.stats.snapshot()).toMatchObject({ consumed: 3, inserted: 3, chunks: 2, commits: 2, batches: 1 });
   });
 
   it('writer rejects (DB down): that chunk is never resolved or committed', async () => {
@@ -276,7 +276,7 @@ describe('S2-F4 poison handling', () => {
     expect(s.dead[0].raw).toBe(ms[50]); // original bytes, untouched
     expect(c.resolveOffset).toHaveBeenCalledWith(ms[99].offset);
     expect(s.calls.indexOf('dlq:1')).toBeLessThan(s.calls.indexOf(`resolve:${ms[99].offset}`)); // DLQ ack before commit
-    expect(s.stats.snapshot()).toMatchObject({ dlq: 1, dlq_by_class: { PERMANENT_PARSE: 1 } });
+    expect(await s.stats.snapshot()).toMatchObject({ dlq: 1, dlq_by_class: { PERMANENT_PARSE: 1 } });
   });
 
   it('several poison records in one chunk: all dead-lettered, good ones stored', async () => {
@@ -375,14 +375,16 @@ describe('S2-F4 poison handling', () => {
     expect(s.stats.errorsByClass.SYSTEMIC_DB).toBe(1);
   });
 
-  it('DLQ publish rejects: offset not resolved, not committed; rows already stored stay stored', async () => {
+  it('DLQ publish rejects: offset not resolved, not committed; the rows were written but the chunk is not "complete"', async () => {
     const s = setup({ maxRows: 1000, dlqPublish: async () => Promise.reject(new Error('NOT_ENOUGH_REPLICAS')) });
     const c = s.ctx([...msgs(3), poison()]);
     await expect(handleBatch(c, s.deps)).rejects.toBeInstanceOf(DlqPublishError);
     expect(c.resolveOffset).not.toHaveBeenCalled();
     expect(c.commitOffsetsIfNecessary).not.toHaveBeenCalled();
-    expect(s.stats.inserted).toBe(3);
-    expect(s.stats.dlqErrors).toBe(1);
+    expect(s.writeChunk).toHaveBeenCalledTimes(1); // the 3 good rows WERE written to Postgres
+    // S2-F6 counting rule: only completed chunks count; this attempt shows up as a chunk failure, and its rows
+    // will appear as duplicates when the retry completes.
+    expect(s.stats).toMatchObject({ consumed: 0, inserted: 0, dlq: 0, dlqErrors: 1, chunkFailures: { dlq_publish: 1 } });
   });
 
   it('DLQ off: a row Postgres rejects blocks (the error propagates, nothing committed)', async () => {

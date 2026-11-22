@@ -162,7 +162,7 @@ describe('Kafka unavailable', () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
     const s = await stats();
     expect(s.producer.breaker).not.toBe('closed');
-    expect(s.http_503_by_reason.kafka_unavailable).toBeGreaterThan(0);
+    expect(s.http['503_by_reason'].kafka_unavailable).toBeGreaterThan(0);
   }, 240_000);
 
   it('brokers come back: 202 again and the record lands in the log, with no API restart', async () => {
@@ -238,7 +238,7 @@ describe('Kafka unavailable', () => {
       await sleep(1000);
       const s = await stats();
       heap.push(s.memory.heapUsed);
-      maxDepth = Math.max(maxDepth, s.batcher.queueDepth);
+      maxDepth = Math.max(maxDepth, s.batcher.queue_depth);
     }
     stopFlood = true;
     await flood;

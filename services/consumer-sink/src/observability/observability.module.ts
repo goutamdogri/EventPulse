@@ -6,7 +6,7 @@ import type { AppConfig } from '../config.js';
 import { PG_POOL } from '../db/db.module.js';
 import { SinkStats } from './sink-stats.js';
 
-/** Prometheus registry. Process metrics only for now; sink series are added in S2-F6. */
+/** The Prometheus registry of the process: Node process metrics + every sink series (SinkStats, S2-F6). */
 @Injectable()
 export class MetricsRegistry {
   readonly registry = new Registry();
@@ -30,21 +30,38 @@ export class ObservabilityController {
     return this.metrics.registry.metrics();
   }
 
+  /** /debug/stats (S2-F6 shape). Cached values only: no Kafka call inside this handler. */
   @Get('debug/stats')
-  debugStats() {
+  async debugStats() {
+    const mem = process.memoryUsage();
     return {
-      ...this.stats.snapshot(),
+      ...(await this.stats.snapshot()),
       group: this.cfg.consumer.groupId,
+      topic: this.cfg.consumer.topic,
+      memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external },
       pg_pool: { max: this.cfg.pgPoolMax, total: this.pool.totalCount, idle: this.pool.idleCount, waiting: this.pool.waitingCount },
-      memory: process.memoryUsage(),
-      config: { consumer: this.cfg.consumer, sink: this.cfg.sink, brokers: this.cfg.kafka.brokers },
+      config: {
+        consumer: this.cfg.consumer,
+        sink: this.cfg.sink,
+        retry: this.cfg.retry,
+        lag_poll_ms: this.cfg.lagPollMs,
+        brokers: this.cfg.kafka.brokers,
+      },
     };
   }
 }
 
 @Global()
 @Module({
-  providers: [MetricsRegistry, SinkStats],
+  providers: [
+    MetricsRegistry,
+    {
+      provide: SinkStats,
+      inject: [MetricsRegistry, PG_POOL],
+      useFactory: (m: MetricsRegistry, pool: Pool) =>
+        new SinkStats(m.registry, () => ({ pgTotal: pool.totalCount, pgIdle: pool.idleCount, pgWaiting: pool.waitingCount })),
+    },
+  ],
   controllers: [ObservabilityController],
   exports: [MetricsRegistry, SinkStats],
 })

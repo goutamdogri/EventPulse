@@ -68,6 +68,8 @@ export interface FlushResult {
   durationMs: number;
   /** ms the oldest message of the batch waited in the queue before the send started. */
   oldestWaitMs: number;
+  /** ms each message of the batch waited in the queue before the send started (S2-F6 histogram). */
+  waitsMs: number[];
   error?: unknown;
 }
 
@@ -249,6 +251,7 @@ export class MicroBatcher {
     this.inFlightBatches.add(batch);
     const bytes = batch.reduce((a, p) => a + p.item.sizeBytes, 0);
     const oldestWaitMs = now - batch[0].enqueuedAt;
+    const waitsMs = batch.map((p) => now - p.enqueuedAt);
     const t0 = performance.now();
     let done = false;
     let timer: NodeJS.Timeout | undefined;
@@ -264,6 +267,7 @@ export class MicroBatcher {
         reason,
         durationMs: performance.now() - t0,
         oldestWaitMs,
+        waitsMs,
         error,
       });
       if (error === undefined) {

@@ -15,6 +15,7 @@ import type { Consumer } from '@eventpulse/kafka-config';
 import { CONFIG } from '../config.js';
 import type { AppConfig } from '../config.js';
 import { PG_POOL } from '../db/db.module.js';
+import { LagMonitor } from '../observability/lag.js';
 import { SinkStats } from '../observability/sink-stats.js';
 import { BatchWriter } from '../sink/batch-writer.js';
 import { DlqPublisher } from '../sink/dlq-publisher.js';
@@ -44,6 +45,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly writer: BatchWriter;
   private readonly faults: FaultInjector;
   private readonly dlq: DlqPublisher;
+  private readonly lag: LagMonitor;
   private readonly resumeTimers = new Set<NodeJS.Timeout>();
   private assignedOnce!: Promise<void>;
   private markAssigned!: () => void;
@@ -56,6 +58,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   ) {
     this.writer = new BatchWriter(pool);
     this.faults = new FaultInjector(cfg.faults);
+    this.lag = new LagMonitor(cfg.kafka, cfg.consumer.groupId, cfg.consumer.topic, cfg.lagPollMs, stats);
     this.dlq = new DlqPublisher(cfg.kafka, cfg.retry.dlqTopic, { sourceTopic: cfg.consumer.topic, groupId: cfg.consumer.groupId });
     if (!cfg.retry.dlqEnabled) {
       this.log.warn('SINK_DLQ_ENABLED=false: a poison record will block its partition (S2-F3 behavior)');
@@ -94,6 +97,11 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
       partitionsConsumedConcurrently: this.cfg.consumer.partitionsConcurrently,
       eachBatch: async (payload) => {
         const { batch } = payload;
+        {
+          // Local lag of this partition after this batch (cheap, this member only; the group lag is polled).
+          const lag = Number(batch.offsetLag());
+          this.stats.setLocalLag(batch.partition, lag);
+        }
         try {
           await handleBatch(
             {
@@ -129,6 +137,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
       },
     });
     this.running = true;
+    this.lag.start();
     this.log.log(`joined group ${this.cfg.consumer.groupId}, subscribed to ${this.cfg.consumer.topic}`);
   }
 
@@ -149,6 +158,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     this.resumeTimers.clear();
     await this.consumer.disconnect();
     await this.dlq.disconnect();
+    await this.lag.stop();
     this.log.log('left the group');
   }
 
@@ -179,7 +189,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private onRebalance(err: { code: number }, assignment: TopicPartition[]) {
     const parts = assignment.map((tp) => `${tp.topic}:${tp.partition}`);
     if (err.code === RdKafkaErrors.ERR__ASSIGN_PARTITIONS) {
-      this.stats.rebalances++;
+      this.stats.countRebalance();
       parts.forEach((p) => this.stats.assigned.add(p));
       this.log.log(`assigned ${parts.join(', ') || '(none)'}; now own ${[...this.stats.assigned].sort().join(', ') || '(none)'}`);
       if (assignment.length > 0) this.markAssigned();

@@ -558,13 +558,13 @@ Each process exposes **both** a Prometheus `/metrics` endpoint (for Grafana) and
 
 - Add scrape jobs in `infra/compose/prometheus-config.yml` for `consumer-sink` (`host.docker.internal:8001`, plus more ports if you run several instances). The API job already exists.
 - Optional but useful: add `danielqsj/kafka-exporter` (or a JMX exporter) to the Kafka compose for broker-side series (partition offsets, under-replicated partitions, consumer group lag from the broker's view).
-- A basic `infra/observability/dashboards/stage-2/pipeline.json`: ingest rps + p99, batcher queue depth and batch size, send latency, 503 by reason, lag per partition, consumed vs inserted vs duplicates, freshness p99, DLQ count. (Per-experiment dashboards come later with the experiments.)
+- A basic `infra/observability/dashboards/stage-2/pipeline.json` (imported through the Grafana UI, never provisioned): ingest rps + p99, batcher queue depth and batch size, send latency, 503 by reason, lag per partition, consumed vs inserted vs duplicates, freshness p99, DLQ count. (Per-experiment dashboards come later with the experiments.)
 
 ### 6.2 What to cover
 
 - Label cardinality stays low (no event ids, tenant ids or raw error messages as labels).
 - Metrics are updated on success **and** failure paths.
-- `consumed − inserted − dlq` is explainable as duplicates (it should equal `duplicates_total`; add a test for that invariant).
+- `consumed − inserted − dlq` is explainable as duplicates (it should equal `duplicates_total`; add a test for that invariant). *Implemented by counting consumed/attempted/inserted/dlq together when a chunk completes; failed attempts count in `ep_consumer_chunk_failures_total{reason}`. See `notebook/fix/step-6.md` 6.1.*
 - Snapshot is cheap (no Kafka admin call inside the HTTP handler; read cached lag values).
 
 ### 6.3 Tests

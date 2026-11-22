@@ -116,4 +116,42 @@ describe('pipeline (real processes)', () => {
     const idle = stats.find((s) => s.assigned_partitions.length === 0)!;
     expect(idle.consumed).toBe(0); // the extra member did no work
   });
+
+  it('S2-F6 consumer metrics after a run: lag 0, inserted = new rows, freshness samples; a 2nd member -> rebalances', async () => {
+    const topic = await createTopic(6);
+    topics.push(topic);
+    const group = `sink-e2e-${randomUUID()}`;
+    const env = { CONSUMER_TOPIC: topic, CONSUMER_GROUP_ID: group, LAG_POLL_MS: '500', CONSUMER_SESSION_TIMEOUT_MS: '10000' };
+    const a = spawnSink(env);
+    procs.push(a);
+    await waitReady(a);
+
+    const ids = await produceEvents(topic, 600);
+    await waitFor(async () => (await db.countRows(ids)) === 600, 30_000, '600 rows');
+    await waitFor(async () => (await a.stats()).lag?.total === 0, 15_000, 'polled group lag 0');
+    const s = await a.stats();
+    expect(s.inserted).toBe(600); // equals the new rows
+    expect(s.consumed).toBe(s.inserted + s.duplicates + s.dlq); // the invariant, live
+    expect(s.freshness_p99_s).not.toBeNull();
+    expect(Object.keys(s.lag.by_partition)).toHaveLength(6);
+    expect(s.batch.commit_p99_ms).not.toBeNull();
+    const text = await (await fetch(`http://localhost:${a.port}/metrics`)).text();
+    expect(text).toMatch(/ep_event_freshness_seconds_count 600/);
+    expect(text).toContain('ep_consumer_lag{partition="0"} 0');
+    expect(text).toContain('ep_consumer_assigned_partitions 6');
+
+    const before = s.rebalances;
+    const b = spawnSink(env);
+    procs.push(b);
+    await waitReady(b, 60_000);
+    await waitFor(
+      async () => {
+        const [sa, sb] = [await a.stats(), await b.stats()];
+        return sa.rebalances > before && sa.assigned_partitions.length > 0 && sb.assigned_partitions.length > 0 && sa.assigned_partitions.length + sb.assigned_partitions.length === 6;
+      },
+      45_000,
+      'rebalance: both members own partitions',
+    );
+    expect((await a.stats()).assigned_partitions.length).toBeLessThan(6); // changed in both snapshots
+  });
 });

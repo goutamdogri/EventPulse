@@ -3,6 +3,7 @@ import { KafkaJS, createKafka } from '@eventpulse/kafka-config';
 import type { Producer } from '@eventpulse/kafka-config';
 import { CONFIG } from '../config.js';
 import type { AppConfig } from '../config.js';
+import { KafkaMetrics } from '../observability/kafka-metrics.js';
 import { classifySendError, errorType } from './errors.js';
 import type { BatchMessage } from './micro-batcher.js';
 
@@ -35,7 +36,10 @@ export class ProducerService implements OnModuleInit, OnApplicationShutdown {
   private connecting?: Promise<void>;
   readonly errorsByType: Record<string, number> = {};
 
-  constructor(@Inject(CONFIG) private readonly cfg: AppConfig) {}
+  constructor(
+    @Inject(CONFIG) private readonly cfg: AppConfig,
+    private readonly metrics: KafkaMetrics,
+  ) {}
 
   private build(): Producer {
     const p = this.cfg.producer;
@@ -50,7 +54,16 @@ export class ProducerService implements OnModuleInit, OnApplicationShutdown {
       // librdkafka properties (outside the kafkaJS block):
       'linger.ms': p.lingerMs,
       'message.timeout.ms': p.deliveryTimeoutMs,
-    });
+      // S2-F6: librdkafka statistics (its own queue, per-broker RTT / in-flight requests). 0 = off.
+      ...(this.cfg.statsIntervalMs > 0
+        ? {
+            'statistics.interval.ms': this.cfg.statsIntervalMs,
+            stats_cb: (ev: { message?: string }) => {
+              if (ev?.message) this.metrics.onClientStats(ev.message);
+            },
+          }
+        : {}),
+    } as any);
   }
 
   async onModuleInit() {

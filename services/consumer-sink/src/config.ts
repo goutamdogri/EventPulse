@@ -46,6 +46,8 @@ export interface AppConfig {
   kafka: KafkaClientConfig;
   consumer: ConsumerConfig;
   sink: { maxRows: number; processingDelayMs: number };
+  /** How often the group lag is polled for /metrics and /debug/stats (S2-F6). 0 = off. */
+  lagPollMs: number;
   /** S2-F4 poison handling. */
   retry: {
     dlqEnabled: boolean;
@@ -125,6 +127,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     faults,
     retry,
+    lagPollMs: envInt(env, 'LAG_POLL_MS', 2_000, 0),
   };
 }
 

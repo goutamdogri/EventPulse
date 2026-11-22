@@ -12,12 +12,17 @@ export const INSERT_SQL = `
   SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::int[], $6::jsonb[], $7::timestamptz[]
   )
-  ON CONFLICT (event_id) DO NOTHING`;
+  ON CONFLICT (event_id) DO NOTHING
+  RETURNING received_at`;
 
 export interface WriteResult {
   attempted: number;
   inserted: number;
   durationMs: number;
+  /** Time to get a pool connection. */
+  connectMs?: number;
+  /** Per newly inserted row: DB commit time - received_at, seconds (duplicates excluded). */
+  freshnessS?: number[];
 }
 
 export function chunk<T>(items: T[], size: number): T[][] {
@@ -44,15 +49,25 @@ export class BatchWriter {
 
   /** One transaction: BEGIN, one INSERT for all rows, COMMIT. Resolves only after COMMIT returned. */
   async writeChunk(rows: EventRow[]): Promise<WriteResult> {
-    const t0 = performance.now();
-    if (rows.length === 0) return { attempted: 0, inserted: 0, durationMs: 0 };
+    if (rows.length === 0) return { attempted: 0, inserted: 0, durationMs: 0, connectMs: 0, freshnessS: [] };
+    const c0 = performance.now();
     const client = await this.pool.connect();
+    const t0 = performance.now();
     try {
       await client.query('BEGIN');
       try {
-        const r = await client.query(INSERT_SQL, toColumns(rows));
+        // RETURNING lists only the rows actually inserted (not the ones ON CONFLICT skipped), so freshness is
+        // measured for real first writes, never for reprocessed duplicates.
+        const r = await client.query<{ received_at: Date }>(INSERT_SQL, toColumns(rows));
         await client.query('COMMIT');
-        return { attempted: rows.length, inserted: r.rowCount ?? 0, durationMs: performance.now() - t0 };
+        const committedAt = Date.now();
+        return {
+          attempted: rows.length,
+          inserted: r.rowCount ?? r.rows?.length ?? 0,
+          durationMs: performance.now() - t0,
+          connectMs: t0 - c0,
+          freshnessS: (r.rows ?? []).map((x) => (committedAt - new Date(x.received_at).getTime()) / 1000),
+        };
       } catch (e) {
         await client.query('ROLLBACK').catch(() => undefined);
         throw e;

@@ -26,8 +26,26 @@ Run more instances by giving each its own `METRICS_PORT`. With 6 partitions, up 
 HTTP endpoints (default port 8001):
 - `GET /healthz`: liveness.
 - `GET /readyz`: 200 once the member has joined the group.
-- `GET /metrics`: Prometheus; process metrics only for now, sink series come in S2-F6.
-- `GET /debug/stats`: assigned partitions, consumed / attempted / inserted / **duplicates**, batches, rebalances, pool, effective config.
+- `GET /metrics`: Prometheus (scraped as job `eventpulse-consumer-sink`, ports 8001-8003).
+- `GET /debug/stats`: assigned partitions, group lag per partition, consumed / inserted / **duplicates** / dlq, errors, retries, chunk failures, rebalances, pauses, p99 timings, freshness, pool, effective config.
+
+## Metrics (S2-F6)
+
+Every series is also a field of `/debug/stats`. Dashboard: `infra/observability/dashboards/stage-2/pipeline.json` ("EventPulse Stage 2 - Pipeline"), imported through the Grafana UI.
+
+| Series | Meaning |
+| --- | --- |
+| `ep_consumer_lag{partition}` | group lag = log end - committed offset, polled every `LAG_POLL_MS` (2 s) by an admin client; the same value on every member, so use `max by (partition)` |
+| `ep_consumer_last_committed_offset{partition}` | from the same poll (-1 = never committed) |
+| `ep_consumer_messages_consumed_total`, `ep_consumer_rows_inserted_total`, `ep_consumer_duplicates_total`, `ep_consumer_dlq_total{error_class}` | added together when a chunk **completes**, so `consumed = inserted + duplicates + dlq` exactly |
+| `ep_consumer_chunk_failures_total{reason}` | chunk attempts that failed and will be retried (`poison_blocked`, `db_unavailable`, `dlq_publish`, `commit`, `other`): a retry loop shows here |
+| `ep_consumer_errors_total{class}`, `ep_consumer_retries_total{class}` | bad records (permanent classes) / failed write attempts (transient, systemic); retries |
+| `ep_event_freshness_seconds` | end-to-end visibility: DB commit time - `received_at` at the API, per **newly inserted** row (`RETURNING`), never for duplicates |
+| `ep_consumer_batch_size_messages{kind=batch\|chunk}`, `ep_consumer_batch_processing_seconds`, `ep_consumer_db_write_seconds`, `ep_consumer_commit_seconds` | sizes and timings |
+| `ep_consumer_commit_errors_total`, `ep_consumer_rebalances_total`, `ep_consumer_assigned_partitions`, `ep_consumer_paused` | group health |
+| `ep_pg_pool_total` / `_idle` / `_waiting`, `ep_pg_pool_connect_wait_seconds` | Postgres pool |
+
+`/debug/stats` also has `local_lag` (per partition, from the last batch, this member only) and reads only cached values: no Kafka call happens inside the HTTP handler.
 
 ## Delivery semantics: at-least-once (S2-F3)
 

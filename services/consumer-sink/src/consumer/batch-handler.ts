@@ -22,7 +22,7 @@
 // This is the ONLY place that resolves or commits offsets in this service.
 // With SINK_DLQ_ENABLED=false the old S2-F2/F3 behavior returns: a poison record throws and blocks its partition.
 
-import type { SinkStats } from '../observability/sink-stats.js';
+import type { ChunkFailure, SinkStats } from '../observability/sink-stats.js';
 import type { BatchWriter, WriteResult } from '../sink/batch-writer.js';
 import { chunk } from '../sink/batch-writer.js';
 import type { DeadLetter, DlqSink } from '../sink/dlq-publisher.js';
@@ -119,66 +119,94 @@ const fromWrite = (w: WriteResult): WriteOutcome => ({ attempted: w.attempted, i
 export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise<void> {
   if (ctx.messages.length === 0) return;
   const { stats, faults } = deps;
-  stats.batches++;
+  stats.observeBatch(ctx.messages.length);
   faults.startBatch();
+  // Every DB write (including isolation sub-writes) feeds the write-latency, pool-wait and freshness metrics.
+  const observed: HandlerDeps = {
+    ...deps,
+    writer: {
+      writeChunk: async (rows) => {
+        const w = await deps.writer.writeChunk(rows);
+        stats.observeDbWrite(w.durationMs, w.connectMs ?? 0, w.freshnessS ?? []);
+        return w;
+      },
+    },
+  };
 
   for (const part of chunk(ctx.messages, deps.maxRows)) {
     if (!ctx.isRunning() || ctx.isStale()) {
       stats.stoppedEarly++; // the rest of the batch is not resolved: it will be read again
       return;
     }
-
-    faults.hit('before_parse');
-    stats.consumed += part.length;
-    const good: { raw: RawMessage; row: EventRow }[] = [];
-    const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
-    for (const m of part) {
-      const r = parseMessage(m);
-      if (r.ok) good.push({ raw: m, row: r.row });
-      else parseErrors.push({ raw: m, error: r.error });
-    }
-    if (parseErrors.length > 0) {
-      stats.countError('PERMANENT_PARSE', parseErrors.length);
-      if (!deps.retry.dlqEnabled) throw new PoisonBatchError(parseErrors.map((p) => p.error));
-    }
-    faults.hit('after_parse');
-
-    if (deps.processingDelayMs > 0) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
-
-    const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
-    stats.chunks++;
-    stats.attempted += out.attempted;
-    stats.inserted += out.inserted;
-    faults.hit('after_db_commit');
-
-    const dead: DeadLetter[] = [
-      ...parseErrors.map((p) => ({ raw: p.raw, errorClass: 'PERMANENT_PARSE' as const, errorCode: p.error.code, errorMessage: p.error.message, attempts: 1 })),
-      ...out.dead,
-    ];
-    if (dead.length > 0) {
-      try {
-        await deps.dlq.publish(dead); // acks=all; only then may the source offset move past these records
-      } catch (e) {
-        stats.dlqErrors++;
-        throw new DlqPublishError(e);
-      }
-      for (const d of dead) stats.countDlq(d.errorClass);
-    }
-
-    if (ctx.isStale()) {
-      // Revoked while we were writing: the new owner reads this chunk again; ON CONFLICT absorbs it.
-      stats.stoppedEarly++;
-      return;
-    }
-
-    ctx.resolveOffset(part[part.length - 1].offset);
     const t0 = performance.now();
-    await commitWithRetry(ctx, deps);
-    stats.commits++;
-    stats.lastCommitMs = performance.now() - t0;
+    try {
+      if (!(await handleChunk(part, ctx, observed))) return; // revoked meanwhile: stop this batch
+    } catch (e) {
+      stats.failChunk(failureReason(e, deps.retry.dlqEnabled));
+      throw e;
+    }
+    stats.observeChunk(part.length, performance.now() - t0);
     stats.lastBatchAt = Date.now();
     await ctx.heartbeat();
   }
+}
+
+function failureReason(e: unknown, dlqEnabled: boolean): ChunkFailure {
+  if (e instanceof PoisonBatchError) return 'poison_blocked';
+  if (e instanceof DbUnavailableError) return 'db_unavailable';
+  if (e instanceof DlqPublishError) return 'dlq_publish';
+  if (e instanceof OffsetCommitError) return 'commit';
+  return dlqEnabled ? 'other' : 'poison_blocked'; // DLQ off: a row Postgres rejects blocks the partition
+}
+
+/** One chunk: parse, write, dead-letter, commit. Returns false if the partition was revoked meanwhile. */
+async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerDeps): Promise<boolean> {
+  const { stats, faults } = deps;
+  faults.hit('before_parse');
+  const good: { raw: RawMessage; row: EventRow }[] = [];
+  const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
+  for (const m of part) {
+    const r = parseMessage(m);
+    if (r.ok) good.push({ raw: m, row: r.row });
+    else parseErrors.push({ raw: m, error: r.error });
+  }
+  if (parseErrors.length > 0) {
+    stats.countError('PERMANENT_PARSE', parseErrors.length);
+    if (!deps.retry.dlqEnabled) throw new PoisonBatchError(parseErrors.map((p) => p.error));
+  }
+  faults.hit('after_parse');
+
+  if (deps.processingDelayMs > 0) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
+
+  const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
+  faults.hit('after_db_commit');
+
+  const dead: DeadLetter[] = [
+    ...parseErrors.map((p) => ({ raw: p.raw, errorClass: 'PERMANENT_PARSE' as const, errorCode: p.error.code, errorMessage: p.error.message, attempts: 1 })),
+    ...out.dead,
+  ];
+  if (dead.length > 0) {
+    try {
+      await deps.dlq.publish(dead); // acks=all; only then may the source offset move past these records
+    } catch (e) {
+      stats.dlqErrors++;
+      throw new DlqPublishError(e);
+    }
+  }
+  // Rows committed and dead letters acknowledged: the chunk's work is done. consumed = inserted + duplicates + dlq.
+  stats.completeChunk({ consumed: part.length, attempted: out.attempted, inserted: out.inserted, dlq: dead });
+
+  if (ctx.isStale()) {
+    // Revoked while we were writing: the new owner reads this chunk again; ON CONFLICT absorbs it.
+    stats.stoppedEarly++;
+    return false;
+  }
+
+  ctx.resolveOffset(part[part.length - 1].offset);
+  const c0 = performance.now();
+  await commitWithRetry(ctx, deps);
+  stats.observeCommit(performance.now() - c0);
+  return true;
 }
 
 /** Commit attempts for one chunk before giving up (1 + this many retries). */
@@ -196,7 +224,7 @@ async function commitWithRetry(ctx: BatchContext, deps: HandlerDeps): Promise<vo
       await ctx.commitOffsetsIfNecessary();
       return;
     } catch (e) {
-      deps.stats.commitErrors++;
+      deps.stats.countCommitError();
       if (attempt >= COMMIT_RETRIES || !ctx.isRunning() || ctx.isStale()) throw new OffsetCommitError(e);
       await sleep(backoffMs(attempt + 1, deps.retry.baseMs, deps.retry.maxMs, deps.rand));
     }
