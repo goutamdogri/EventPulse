@@ -29,6 +29,7 @@ export class MetricsService {
   readonly eventsDuplicate: Counter<string>;
   readonly dbErrors: Counter<string>;
   readonly dbErrorsByType: Counter<string>;
+  readonly dbErrorsByCode: Counter<string>; // B8
   readonly poolWait: Histogram<string>;
   readonly pgQuery: Histogram<string>;
   readonly counterUpdate: Histogram<string>;
@@ -99,6 +100,26 @@ export class MetricsService {
       labelNames: ['type'],
       registers,
     });
+
+    // B8: the same 503s again, but by the raw error code of the failure (Postgres SQLSTATE such as 57P01
+    // admin_shutdown / 57P03 cannot_connect_now, Node codes such as ECONNREFUSED / ECONNRESET, or one of the words
+    // pool_timeout / terminated / none). ep_db_errors_by_type_total is kept unchanged.
+    this.dbErrorsByCode = new Counter({
+      name: 'ep_db_errors_by_code_total',
+      help: 'DB/pool errors turned into 503, by raw error code.',
+      labelNames: ['code'],
+      registers,
+    });
+
+    // B8: pool life cycle. connects - removes = connections alive; a restart should show a burst of removes
+    // (dead connections thrown away) followed by a burst of connects (new ones).
+    const poolEvents = (name: string, help: string, event: 'connect' | 'remove' | 'error') => {
+      const c = new Counter({ name, help, registers });
+      pool.on(event as 'connect', () => c.inc());
+    };
+    poolEvents('ep_pg_pool_connects_total', 'pg pool: new connections opened to Postgres', 'connect');
+    poolEvents('ep_pg_pool_removes_total', 'pg pool: connections destroyed and removed from the pool', 'remove');
+    poolEvents('ep_pg_pool_idle_errors_total', 'pg pool: errors on idle connections (e.g. Postgres went away)', 'error');
 
     this.poolWait = new Histogram({
       name: 'ep_pg_pool_wait_seconds',
