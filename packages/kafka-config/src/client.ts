@@ -12,6 +12,12 @@ export type Producer = KafkaJSTypes.Producer;
 export type ProducerConstructorConfig = KafkaJSTypes.ProducerConstructorConfig;
 export type KafkaMessage = KafkaJSTypes.Message;
 export type IHeaders = KafkaJSTypes.IHeaders;
+export type Consumer = KafkaJSTypes.Consumer;
+export type ConsumerConstructorConfig = KafkaJSTypes.ConsumerConstructorConfig;
+export type EachBatchPayload = KafkaJSTypes.EachBatchPayload;
+
+/** librdkafka error codes, e.g. ERR__ASSIGN_PARTITIONS (-175) / ERR__REVOKE_PARTITIONS (-174) in rebalance_cb. */
+export const RdKafkaErrors = Confluent.CODES.ERRORS;
 
 const LOG_LEVELS = {
   nothing: KafkaJS.logLevel.NOTHING,
