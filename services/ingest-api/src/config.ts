@@ -1,64 +1,108 @@
 import { Global, Module } from '@nestjs/common';
+import {
+  KEY_MODES,
+  envBool,
+  envEnum,
+  envInt,
+  loadKafkaClientConfig,
+} from '@eventpulse/kafka-config';
+import type { KafkaClientConfig, KeyMode } from '@eventpulse/kafka-config';
 
 export const CONFIG = Symbol('CONFIG');
 
+export const COMPRESSIONS = ['none', 'gzip', 'snappy', 'lz4', 'zstd'] as const;
+export type Compression = (typeof COMPRESSIONS)[number];
+
+/**
+ * The broker's default message.max.bytes is 1048588 and applies to one record batch per partition.
+ * Keeping our batch byte cap under 1 MB keeps us under it whatever the partition split is.
+ */
+export const MAX_BATCH_BYTES_LIMIT = 1_000_000;
+
+export interface ProducerConfig {
+  /** -1 = all in-sync replicas, 1 = leader only, 0 = no ack. Set per producer, not per send. */
+  acks: -1 | 0 | 1;
+  compression: Compression;
+  idempotent: boolean;
+  /** librdkafka's own batching delay. 0 by default so the micro-batcher alone decides the batching. */
+  lingerMs: number;
+  /** librdkafka message.timeout.ms: total time for a message to be delivered, retries included. */
+  deliveryTimeoutMs: number;
+  /** Broker-side ack timeout for a produce request. */
+  ackTimeoutMs: number;
+}
+
+export interface BatcherConfig {
+  maxMessages: number;
+  maxWaitMs: number;
+  maxBytes: number;
+  maxQueue: number;
+  maxInFlight: number;
+}
+
 export interface AppConfig {
   port: number;
-  databaseUrl: string;
   apiKeys: Map<string, string>; // key -> tenant
-  pgPoolMax: number;
-  pgConnTimeoutMs: number;      // 0 = unset
-  pgStatementTimeoutMs: number; // 0 = unset
   bodyLimit: string;
   logEnabled: boolean;
   retryAfterS: number;
-  counterMode: 'off' | 'hot';   // B4: 'hot' = also UPDATE tenant_counters in the same transaction
+  kafka: KafkaClientConfig;
+  producer: ProducerConfig;
+  batcher: BatcherConfig;
+  keyMode: KeyMode;
 }
 
-const num = (k: string, d: number): number => {
-  const v = process.env[k];
-  if (v === undefined || v === '') return d;
-  const n = Number(v);
-  if (!Number.isFinite(n)) throw new Error(`${k} must be a number`);
-  return n;
-};
-
-const counterMode = (): 'off' | 'hot' => {
-  const v = process.env.COUNTER_MODE ?? 'off';
-  if (v !== 'off' && v !== 'hot') throw new Error('COUNTER_MODE must be off or hot');
-  return v;
-};
-
 // Called from a provider factory (not at import time) so tests can set env first.
-export function loadConfig(): AppConfig {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error('DATABASE_URL is required');
-
+export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
   const apiKeys = new Map<string, string>();
-  for (const pair of (process.env.API_KEYS ?? '').split(',').filter(Boolean)) {
+  for (const pair of (env.API_KEYS ?? '').split(',').filter(Boolean)) {
     const [key, tenant] = pair.split(':').map((s) => s.trim());
     if (!key || !tenant) throw new Error(`Bad API_KEYS entry: "${pair}"`);
     apiKeys.set(key, tenant);
   }
   if (apiKeys.size === 0) throw new Error('API_KEYS must define at least one key:tenant');
 
+  const acks = envInt(env, 'KAFKA_ACKS', -1);
+  if (acks !== -1 && acks !== 0 && acks !== 1) throw new Error('KAFKA_ACKS must be -1, 0 or 1');
+  const idempotent = envBool(env, 'KAFKA_IDEMPOTENT', true);
+  if (idempotent && acks !== -1) {
+    throw new Error('KAFKA_IDEMPOTENT=true requires KAFKA_ACKS=-1 (set KAFKA_IDEMPOTENT=false to try acks 0/1)');
+  }
+
+  const batcher: BatcherConfig = {
+    maxMessages: envInt(env, 'BATCH_MAX_MESSAGES', 500, 1),
+    maxWaitMs: envInt(env, 'BATCH_MAX_WAIT_MS', 5, 0),
+    maxBytes: envInt(env, 'BATCH_MAX_BYTES', 900_000, 1),
+    maxQueue: envInt(env, 'BATCH_MAX_QUEUE', 10_000, 1),
+    maxInFlight: envInt(env, 'BATCH_MAX_IN_FLIGHT', 1, 1),
+  };
+  if (batcher.maxBytes > MAX_BATCH_BYTES_LIMIT) {
+    throw new Error(`BATCH_MAX_BYTES must be <= ${MAX_BATCH_BYTES_LIMIT} (broker message.max.bytes)`);
+  }
+
   return {
-    port: num('PORT', 8000),
-    databaseUrl,
+    port: envInt(env, 'PORT', 8000, 0),
     apiKeys,
-    pgPoolMax: num('PG_POOL_MAX', 10),
-    pgConnTimeoutMs: num('PG_CONN_TIMEOUT_MS', 2000),
-    pgStatementTimeoutMs: num('PG_STATEMENT_TIMEOUT_MS', 5000),
-    bodyLimit: process.env.BODY_LIMIT ?? '64kb',
-    logEnabled: process.env.LOG_ENABLED === 'true',
-    retryAfterS: num('RETRY_AFTER_S', 1),
-    counterMode: counterMode(),
+    bodyLimit: env.BODY_LIMIT || '64kb',
+    logEnabled: env.LOG_ENABLED === 'true',
+    retryAfterS: envInt(env, 'RETRY_AFTER_S', 1, 0),
+    kafka: loadKafkaClientConfig(env, 'ingest-api'),
+    producer: {
+      acks: acks as -1 | 0 | 1,
+      compression: envEnum(env, 'KAFKA_COMPRESSION', COMPRESSIONS, 'none'),
+      idempotent,
+      lingerMs: envInt(env, 'KAFKA_LINGER_MS', 0, 0),
+      deliveryTimeoutMs: envInt(env, 'KAFKA_DELIVERY_TIMEOUT_MS', 30_000, 1),
+      ackTimeoutMs: envInt(env, 'KAFKA_ACK_TIMEOUT_MS', 30_000, 1),
+    },
+    batcher,
+    keyMode: envEnum(env, 'KAFKA_KEY_MODE', KEY_MODES, 'tenant'),
   };
 }
 
 @Global()
 @Module({
-  providers: [{ provide: CONFIG, useFactory: loadConfig }],
+  providers: [{ provide: CONFIG, useFactory: () => loadConfig() }],
   exports: [CONFIG],
 })
 export class ConfigModule {}

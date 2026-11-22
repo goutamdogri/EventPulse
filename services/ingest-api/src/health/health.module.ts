@@ -1,30 +1,26 @@
 import {
   Controller,
   Get,
-  Inject,
   Module,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { Pool } from 'pg';
-import { PG_POOL } from '../db/db.module.js';
+import { ProducerService } from '../kafka/producer.service.js';
 
 @Controller()
 export class HealthController {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(private readonly producer: ProducerService) {}
 
   @Get('healthz') // liveness: shallow, never touches dependencies
   healthz() {
     return { ok: true };
   }
 
-  @Get('readyz') // readiness: can we reach the DB?
-  async readyz() {
-    try {
-      await this.pool.query('SELECT 1');
-      return { ok: true, db: 'up' };
-    } catch {
-      throw new ServiceUnavailableException({ ok: false, db: 'down' });
-    }
+  // Readiness: the API no longer depends on Postgres, only on Kafka.
+  // (S2-F5 makes this follow broker outages and reconnects at runtime.)
+  @Get('readyz')
+  readyz() {
+    if (this.producer.isConnected()) return { ok: true, kafka: 'up' };
+    throw new ServiceUnavailableException({ ok: false, kafka: 'down' });
   }
 }
 
