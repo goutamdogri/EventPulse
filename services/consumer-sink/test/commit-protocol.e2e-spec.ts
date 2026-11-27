@@ -2,6 +2,7 @@
 // Proven with a real consumer-sink process that is SIGKILLed at each crash point, a database that is cut
 // off through Toxiproxy, and a SIGTERM under load. Each test uses its own topic and consumer group.
 import { randomUUID } from 'node:crypto';
+import { LEGACY_CRASH_AT } from '@eventpulse/fault-injector';
 import {
   Db,
   createTopic,
@@ -56,7 +57,7 @@ describe('S2-F3 commit protocol (real process)', () => {
     const crashing = start({ ...common, DEBUG_FAULTS: 'true', CRASH_AT: point, CRASH_AFTER_BATCHES: '4' });
     const exit = await Promise.race([crashing.exited, sleep(45_000).then(() => null)]);
     expect(exit, `process did not crash\n${crashing.log.join('')}`).toEqual({ code: null, signal: 'SIGKILL' });
-    expect(crashing.log.join('')).toContain(`CRASH_AT=${point}`);
+    expect(crashing.log.join('')).toContain(`CRASH_AT=${LEGACY_CRASH_AT[point]}`); // Stage 2 env form, Stage 3 point name
     const rowsAtCrash = await db.countRows(ids);
     const committedAtCrash = await totalCommitted(group, topic);
 

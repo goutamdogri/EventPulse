@@ -1,0 +1,25 @@
+{
+  "name": "@eventpulse/fault-injector",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Named crash points and injected errors for EventPulse correctness tests (debug-only).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

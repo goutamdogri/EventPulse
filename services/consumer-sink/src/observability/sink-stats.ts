@@ -58,6 +58,10 @@ export class SinkStats {
   readonly retriesByClass: Partial<Record<ErrorClass, number>> = {};
   readonly dlqByClass: Partial<Record<ErrorClass, number>> = {};
   readonly chunkFailures: Partial<Record<ChunkFailure, number>> = {};
+  /** S3-F2: duplicates whose content differs from the stored row (same key, other content). Never overwritten. */
+  conflicts = 0;
+  conflictCheckErrors = 0;
+  lastConflict?: { at: string; tenant_id: string; event_id: string };
   readonly paused = new Set<string>();
   readonly assigned = new Set<string>();
   readonly localLag: Record<string, number> = {}; // per partition, from the last batch (cheap, this member only)
@@ -89,6 +93,13 @@ export class SinkStats {
       this.dlqByClass[d.errorClass] = (this.dlqByClass[d.errorClass] ?? 0) + 1;
       this.m.dlq.inc({ error_class: d.errorClass });
     }
+  }
+
+  countConflicts(keys: { tenant_id: string; event_id: string }[]) {
+    this.conflicts += keys.length;
+    this.m.conflicts.inc(keys.length);
+    const k = keys[keys.length - 1];
+    this.lastConflict = { at: new Date().toISOString(), tenant_id: k.tenant_id, event_id: k.event_id };
   }
 
   failChunk(reason: ChunkFailure) {
@@ -178,6 +189,9 @@ export class SinkStats {
       attempted: this.attempted,
       inserted: this.inserted,
       duplicates: this.duplicates,
+      conflicting_duplicates: this.conflicts,
+      conflict_check_errors: this.conflictCheckErrors,
+      last_conflict: this.lastConflict ?? null,
       dlq: this.dlq,
       dlq_by_class: { ...this.dlqByClass },
       dlq_errors: this.dlqErrors,
@@ -249,6 +263,7 @@ function createMetrics(registry: Registry, st: SinkStats, live?: () => { pgTotal
     consumed: new Counter({ name: 'ep_consumer_messages_consumed_total', help: 'Messages of completed chunks (reprocessed ones included).', registers }),
     inserted: new Counter({ name: 'ep_consumer_rows_inserted_total', help: 'Rows actually inserted (rowCount).', registers }),
     duplicates: new Counter({ name: 'ep_consumer_duplicates_total', help: 'Rows absorbed by ON CONFLICT DO NOTHING (reprocessing made visible).', registers }),
+    conflicts: new Counter({ name: 'ep_sink_conflicting_duplicates_total', help: 'Duplicate keys whose content_hash differs from the stored row (S3-F2; never overwritten).', registers }),
     dlq: new Counter({ name: 'ep_consumer_dlq_total', help: 'Records published to the DLQ, by error class.', labelNames: ['error_class'], registers }),
     chunkFailures: new Counter({ name: 'ep_consumer_chunk_failures_total', help: 'Chunk attempts that failed and will be retried, by reason.', labelNames: ['reason'], registers }),
     errors: new Counter({ name: 'ep_consumer_errors_total', help: 'Bad records (permanent classes) / failed write attempts (transient, systemic), by class.', labelNames: ['class'], registers }),

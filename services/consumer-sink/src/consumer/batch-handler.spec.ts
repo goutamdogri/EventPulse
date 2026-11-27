@@ -4,8 +4,9 @@ import type { EventRow, RawMessage } from '../sink/parse.js';
 import { DbUnavailableError, DlqPublishError, OffsetCommitError, PoisonBatchError, handleBatch } from './batch-handler.js';
 import type { RetryPolicy } from './batch-handler.js';
 import type { DeadLetter } from '../sink/dlq-publisher.js';
-import { FaultInjector } from './fault-injector.js';
-import type { CrashPoint } from './fault-injector.js';
+import { FaultInjector, loadFaultConfig } from '@eventpulse/fault-injector';
+
+type CrashPoint = 'none' | 'before_parse' | 'after_parse' | 'after_db_commit';
 
 let n = 0;
 function msg(): RawMessage {
@@ -33,7 +34,7 @@ const okWrite: WriteFn = async (rows) => ({ attempted: rows.length, inserted: ro
 /** Records every call (writes, resolves, commits, heartbeats, crashes) in order. */
 const pgErr = (code: string, message = `pg error ${code}`) => Object.assign(new Error(message), { code });
 
-function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; crashAfterBatches?: number; retry?: Partial<RetryPolicy>; dlqPublish?: (d: DeadLetter[]) => Promise<void> } = {}) {
+function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; crashAfterBatches?: number; faults?: string; retry?: Partial<RetryPolicy>; dlqPublish?: (d: DeadLetter[]) => Promise<void> } = {}) {
   const calls: string[] = [];
   const stats = new SinkStats();
   const write = opts.write ?? okWrite;
@@ -44,7 +45,12 @@ function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; 
     return r;
   });
   const kill = vi.fn(() => void calls.push('SIGKILL'));
-  const faults = new FaultInjector({ crashAt: opts.crashAt ?? 'none', crashAfterBatches: opts.crashAfterBatches ?? 1 }, kill);
+  // Stage 2 env form (CRASH_AT + CRASH_AFTER_BATCHES) or the Stage 3 form (FAULTS=<point>@N).
+  const faults = new FaultInjector(
+    loadFaultConfig({ DEBUG_FAULTS: 'true', CRASH_AT: opts.crashAt ?? 'none', CRASH_AFTER_BATCHES: String(opts.crashAfterBatches ?? 1), FAULTS: opts.faults }),
+    kill,
+    () => undefined,
+  );
   let running = true;
   let stale = false;
   const dead: DeadLetter[] = [];
@@ -263,6 +269,21 @@ describe('crash points', () => {
     expect(s.kill).toHaveBeenCalledTimes(1);
     await handleBatch(s.ctx(msgs(2)), s.deps);
     expect(s.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('consumer:after-offset-commit: killed only after the offset commit', async () => {
+    const s = setup({ faults: 'consumer:after-offset-commit' });
+    await handleBatch(s.ctx(msgs(2)), s.deps);
+    const b = before(s.calls);
+    expect(b.slice(0, 2)).toEqual(['write:2', 'db-commit']);
+    expect(b.at(-1)).toBe('kafka-commit');
+  });
+
+  it('FAULTS=<point>@N counts hits (chunks), not batches', async () => {
+    const s = setup({ faults: 'consumer:after-db-commit@2' });
+    await handleBatch(s.ctx(msgs(4)), s.deps); // maxRows 2 -> 2 chunks in one batch
+    expect(s.kill).toHaveBeenCalledTimes(1);
+    expect(before(s.calls).filter((c) => c === 'db-commit')).toHaveLength(2);
   });
 
   it('none: never kills', async () => {

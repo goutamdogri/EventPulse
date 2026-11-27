@@ -1,4 +1,5 @@
 import { encodeEvent } from '@eventpulse/kafka-config';
+import { eventContentHash } from '@eventpulse/idempotency';
 import { parseMessage } from './parse.js';
 import type { RawMessage } from './parse.js';
 
@@ -35,10 +36,21 @@ describe('parseMessage', () => {
         tenant_id: 'tenant_a',
         payload: '{"a":1}',
         received_at: '2026-11-22T05:00:00.123Z',
+        content_hash: eventContentHash(body),
         partition: 2,
         offset: '41',
       },
     });
+  });
+
+  it('content_hash ignores key order and formatting of the record, but not its content (S3-F2)', () => {
+    const a = parseMessage(goodMessage());
+    const reordered = parseMessage(goodMessage({ value: Buffer.from(`{ "payload": {"a": 1.0}, "schema_version": 1, "occurred_at": "${event.occurred_at}", "type": "${event.type}", "tenant_id": "tenant_a", "event_id": "${event.event_id}" }`) }));
+    const changed = parseMessage(withValue({ ...body, payload: { a: 2 } }));
+    expect(a.ok && reordered.ok && changed.ok).toBe(true);
+    if (!a.ok || !reordered.ok || !changed.ok) return;
+    expect(reordered.row.content_hash.equals(a.row.content_hash)).toBe(true);
+    expect(changed.row.content_hash.equals(a.row.content_hash)).toBe(false);
   });
 
   it('accepts headers given as Buffers (what the consumer really receives)', () => {

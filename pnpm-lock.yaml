@@ -172,6 +172,30 @@ importers:
         specifier: ^0.16.1
         version: 0.16.1
 
+  packages/fault-injector:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  packages/idempotency:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
   packages/kafka-config:
     dependencies:
       '@confluentinc/kafka-javascript':
@@ -193,6 +217,12 @@ importers:
       '@confluentinc/kafka-javascript':
         specifier: 1.11.0
         version: 1.11.0(supports-color@7.2.0)
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/idempotency':
+        specifier: workspace:*
+        version: link:../../packages/idempotency
       '@eventpulse/kafka-config':
         specifier: workspace:*
         version: link:../../packages/kafka-config
@@ -350,6 +380,34 @@ importers:
         version: 8.3.8(@types/node@24.19.2)(jiti@2.7.0)
       vitest:
         specifier: ^4.1.2
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  tests/correctness:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/kafka-config':
+        specifier: workspace:*
+        version: link:../../packages/kafka-config
+      dotenv:
+        specifier: ^18.0.10
+        version: 18.0.10
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
 
   tools/audit:

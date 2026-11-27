@@ -57,7 +57,7 @@ If the server runs with weaker settings for an experiment, 202 promises less:
 - **The event is not necessarily queryable yet.** It reaches Postgres later, when the `sink-postgres` consumer group processes it (S2-F2). Visibility is **eventual**.
 - Target: visible in Postgres within **5 seconds** of the 202 under normal load. This is tracked as end-to-end freshness (`stored_at - received_at`, metric `ep_event_freshness_seconds`) from S2-F2/S2-F6 on. During a database outage or slow database, ingestion keeps accepting events and the delay grows (consumer lag).
 - **No ordering guarantee across tenants.** Events of one tenant go to one partition (key = `tenant_id`), so they keep their append order in the log; this is not yet carried through to queries.
-- **No deduplication at ingest.** The same `event_id` sent twice is appended twice. Duplicates are absorbed at the sink (`ON CONFLICT (event_id) DO NOTHING`).
+- **No deduplication at ingest (yet).** The same `event_id` sent twice is appended twice. Duplicates are absorbed at the sink: from Stage 3 the key is `(tenant_id, event_id)` (`ON CONFLICT (tenant_id, event_id) DO NOTHING`), so ids are scoped to your tenant, the first stored copy wins, and a resend with **different content** under the same id is ignored and counted as a conflict. API-level idempotency (`Idempotency-Key`) comes in Stage 3 step 2.
 
 ## Retry guidance for clients
 

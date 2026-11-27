@@ -1,0 +1,27 @@
+{
+  "name": "@eventpulse/correctness-tests",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Stage 3 correctness suite: log replay, crash matrix (generates docs/generated/crash-matrix.*), later reorder and property tests.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink build",
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "crash-matrix": "pnpm test:e2e test/crash-matrix.e2e-spec.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@eventpulse/fault-injector": "workspace:*",
+    "@eventpulse/kafka-config": "workspace:*",
+    "dotenv": "^18.0.10",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

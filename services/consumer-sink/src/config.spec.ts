@@ -18,11 +18,16 @@ describe('loadConfig', () => {
   });
 
   it('crash points are off by default and need DEBUG_FAULTS', () => {
-    expect(loadConfig(base).faults).toEqual({ crashAt: 'none', crashAfterBatches: 1 });
+    expect(loadConfig(base).faults).toEqual({ enabled: false, crashes: [], errors: [] });
     expect(() => loadConfig({ ...base, CRASH_AT: 'after_db_commit' })).toThrow(/DEBUG_FAULTS/);
-    expect(loadConfig({ ...base, CRASH_AT: 'after_db_commit', CRASH_AFTER_BATCHES: '3', DEBUG_FAULTS: 'true' }).faults)
-      .toEqual({ crashAt: 'after_db_commit', crashAfterBatches: 3 });
+    expect(() => loadConfig({ ...base, FAULTS: 'consumer:after-db-commit' })).toThrow(/DEBUG_FAULTS/);
+    // Stage 2 form still works (K5 scripts), mapped to the Stage 3 point names.
+    expect(loadConfig({ ...base, CRASH_AT: 'after_db_commit', CRASH_AFTER_BATCHES: '3', DEBUG_FAULTS: 'true' }).faults.crashes)
+      .toEqual([{ point: 'consumer:after-db-commit', nth: 3, per: 'batch' }]);
+    expect(loadConfig({ ...base, FAULTS: 'consumer:after-insert-before-commit@2', FAULT_ERRORS: 'consumer:before-insert=40001x3', DEBUG_FAULTS: 'true' }).faults)
+      .toMatchObject({ enabled: true, crashes: [{ point: 'consumer:after-insert-before-commit', nth: 2, per: 'hit' }], errors: [{ code: '40001', times: 3 }] });
     expect(() => loadConfig({ ...base, CRASH_AT: 'somewhere', DEBUG_FAULTS: 'true' })).toThrow();
+    expect(() => loadConfig({ ...base, FAULTS: 'consumer:somewhere', DEBUG_FAULTS: 'true' })).toThrow();
   });
 
   it('SINK_DEDUP=false is debug-only (K5)', () => {

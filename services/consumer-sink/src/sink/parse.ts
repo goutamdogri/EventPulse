@@ -7,6 +7,7 @@
 // Rules match the API's CreateEventDto, plus what the API adds (tenant_id, received_at header).
 
 import { HEADER_RECEIVED_AT } from '@eventpulse/kafka-config';
+import { eventContentHash } from '@eventpulse/idempotency';
 
 export interface RawMessage {
   partition: number;
@@ -25,6 +26,8 @@ export interface EventRow {
   /** JSON text, inserted as jsonb. */
   payload: string;
   received_at: string;
+  /** sha256 of the canonical event (S3-F2): tells a true duplicate from a reused id with other content. */
+  content_hash: Buffer;
   partition: number;
   offset: string;
 }
@@ -99,6 +102,13 @@ export function parseMessage(m: RawMessage): ParseResult {
   const receivedAt = headerString(m.headers, HEADER_RECEIVED_AT);
   if (!isIso(receivedAt)) return fail('bad_received_at', `header ${HEADER_RECEIVED_AT} missing or not ISO 8601`);
 
+  let contentHash: Buffer;
+  try {
+    contentHash = eventContentHash(v);
+  } catch (e) {
+    return fail('bad_payload', `payload has no canonical form: ${(e as Error).message}`);
+  }
+
   return {
     ok: true,
     row: {
@@ -109,6 +119,7 @@ export function parseMessage(m: RawMessage): ParseResult {
       schema_version: v.schema_version,
       payload: JSON.stringify(v.payload),
       received_at: receivedAt,
+      content_hash: contentHash,
       partition: m.partition,
       offset: m.offset,
     },

@@ -6,7 +6,8 @@ Stage 2 service (S2-F2). It is a member of consumer group **`sink-postgres`**: i
 events.raw (6 partitions) --> eachBatch (one partition, up to CONSUMER_MAX_BATCH_SIZE msgs)
                                  | parse every record (src/sink/parse.ts)
                                  | chunks of SINK_MAX_ROWS -> BEGIN; INSERT ... SELECT FROM unnest(...)
-                                 |                            ON CONFLICT (event_id) DO NOTHING; COMMIT
+                                 |                            ON CONFLICT (tenant_id, event_id) DO NOTHING;
+                                 |                            upsert sink_offsets; COMMIT   (Stage 3, S3-F2)
                                  | after EACH chunk's COMMIT: resolveOffset(last of chunk) + commit offsets to Kafka
                                  v
                               Postgres events (received_at from the Kafka header, stored_at = now())
@@ -16,7 +17,7 @@ events.raw (6 partitions) --> eachBatch (one partition, up to CONSUMER_MAX_BATCH
 
 ```bash
 make stage2-kafka-up        # 3 brokers + topics
-make stage2-migrate         # applies db/migrations (0004 adds events.stored_at)
+make stage2-migrate         # applies db/migrations (0004 adds events.stored_at, 0005 the (tenant_id, event_id) key)
 make stage2-build
 make stage2-consumer-start  # reads services/consumer-sink/.env (copy .env.example)
 ```
@@ -54,13 +55,27 @@ Offsets are committed **only after the database transaction commits**, one chunk
 ```
 for each chunk (SINK_MAX_ROWS messages) of a batch:
     stop if shutting down (isRunning) or the partition was revoked (isStale)
-    parse                                     <- crash points before_parse / after_parse
-    BEGIN; INSERT ... ON CONFLICT DO NOTHING; COMMIT
-                                              <- crash point after_db_commit
+    parse                                     <- crash points consumer:before-parse / consumer:after-parse
+    BEGIN                                     <- consumer:before-insert
+    INSERT ... ON CONFLICT (tenant_id, event_id) DO NOTHING RETURNING tenant_id, event_id
+    upsert sink_offsets (GREATEST)            <- consumer:after-insert-before-commit
+    COMMIT                                    <- consumer:after-db-commit
+    (only if the chunk had duplicates: compare their content_hash with the stored rows -> conflicts)
     stop (without resolving) if the partition was revoked during the write
     resolveOffset(last offset of chunk)       (the client stores last + 1 = next offset to read)
-    commit offsets to Kafka, heartbeat
+    commit offsets to Kafka, heartbeat        <- consumer:after-offset-commit
 ```
+
+### Stage 3 (S3-F2): idempotent on `(tenant_id, event_id)`
+
+- The primary key is `(tenant_id, event_id)` (migration 0005): two tenants can use the same id.
+- `DO NOTHING`, never `DO UPDATE`: the first committed copy wins and a duplicate changes nothing (not even `stored_at`).
+- A duplicate whose `content_hash` differs from the stored row (same key, other content: a producer bug) is a
+  **conflicting duplicate**: counted in `ep_sink_conflicting_duplicates_total` / `conflicting_duplicates`, never written.
+- `sink_offsets` keeps the highest stored offset per (group, topic, partition), written in the same transaction
+  (used by Stage 3 step 3 to tell reprocessed from redelivered duplicates; see ADR 0002).
+- Proof: `tests/correctness` (log replay three times, replay from mid-partition, crash matrix at every consumer point;
+  generated table in `docs/generated/crash-matrix.md`).
 
 | Crash point | Rows in DB | Offset committed | Result after restart |
 | --- | --- | --- | --- |
@@ -88,7 +103,8 @@ Measured with real SIGKILLs (`test/commit-protocol.e2e-spec.ts`, 5,000 events, c
 
 ### Debug hooks (never set in normal runs)
 
-- `CRASH_AT=before_parse|after_parse|after_db_commit` with `CRASH_AFTER_BATCHES=N`: SIGKILL this process at that point on its Nth batch. Refused unless `DEBUG_FAULTS=true`.
+- `FAULTS=<point>[@N|@bN]` (Stage 3, `packages/fault-injector`): SIGKILL this process at a named point on its Nth hit (`@N`) or in its Nth batch (`@bN`). `FAULT_ERRORS=<point>=<CODE>[xN|x*][:marker=TEXT]` makes that point throw an error with that code. `GET/POST/DELETE /debug/faults` show, arm and disarm them at runtime. All refused unless `DEBUG_FAULTS=true`.
+- `CRASH_AT=before_parse|after_parse|after_db_commit` with `CRASH_AFTER_BATCHES=N` (Stage 2 form, still accepted): same as `FAULTS=consumer:<point>@bN`.
 - `SINK_PROCESSING_DELAY_MS`: artificial work per chunk, before the DB write.
 - `SINK_PROCESSING_DELAY_CHUNKS` / `SINK_PROCESSING_DELAY_SKIP_CHUNKS` (K8): delay only that many chunks (0 = every chunk), after skipping the first N.
 - `CONSUMER_TOPIC`: read another topic (tests use a throw-away topic per run).

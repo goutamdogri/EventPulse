@@ -9,8 +9,8 @@ import {
   loadKafkaClientConfig,
 } from '@eventpulse/kafka-config';
 import type { KafkaClientConfig } from '@eventpulse/kafka-config';
-import { CRASH_POINTS } from './consumer/fault-injector.js';
-import type { FaultConfig } from './consumer/fault-injector.js';
+import { loadFaultConfig } from '@eventpulse/fault-injector';
+import type { FaultConfig } from '@eventpulse/fault-injector';
 
 export const CONFIG = Symbol('CONFIG');
 
@@ -99,13 +99,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error('CONSUMER_PARTITIONS_CONCURRENTLY must be <= PG_POOL_MAX');
   }
 
-  const faults: FaultConfig = {
-    crashAt: envEnum(env, 'CRASH_AT', CRASH_POINTS, 'none'),
-    crashAfterBatches: envInt(env, 'CRASH_AFTER_BATCHES', 1, 1),
-  };
-  if (faults.crashAt !== 'none' && !envBool(env, 'DEBUG_FAULTS', false)) {
-    throw new Error(`CRASH_AT=${faults.crashAt} needs DEBUG_FAULTS=true (crash points are debug-only)`);
-  }
+  // FAULTS / FAULT_ERRORS / CRASH_AT (Stage 2 form): debug-only, need DEBUG_FAULTS=true (packages/fault-injector).
+  const faults: FaultConfig = loadFaultConfig(env);
 
   // K5: SINK_DEDUP=false turns off ON CONFLICT and writes to a copy of the table with no primary key.
   const dedup = envBool(env, 'SINK_DEDUP', true);

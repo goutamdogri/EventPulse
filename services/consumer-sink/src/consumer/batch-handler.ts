@@ -6,18 +6,20 @@
 //
 //   for each chunk of the batch (SINK_MAX_ROWS messages):
 //       stop if the consumer is shutting down or the partition was revoked (rebalance)
-//       parse every record                        crash points: before_parse, after_parse
+//       parse every record                        crash points: consumer:before-parse, consumer:after-parse
 //         unparseable -> dead letter (PERMANENT_PARSE), no retry
-//       write the good rows: BEGIN; INSERT ...; COMMIT
+//       write the good rows: BEGIN; INSERT ...; sink_offsets; COMMIT   (S3-F2, idempotent on (tenant_id, event_id))
+//                                        crash points: consumer:before-insert, consumer:after-insert-before-commit
 //         TRANSIENT/SYSTEMIC DB error -> backoff + retry inside the window; then pause the partition and throw
 //                                        (nothing resolved: the chunk is read again after the pause)
 //         PERMANENT/UNKNOWN DB error  -> isolate by bisection; good rows are written, each bad row is retried
 //                                        SINK_MAX_RETRIES times, then becomes a dead letter (PERMANENT_DB)
-//                                        crash point: after_db_commit
+//                                        crash point: consumer:after-db-commit
 //       publish dead letters to the DLQ and wait for the ack (failure -> throw, nothing resolved)
 //       stop if the partition was revoked meanwhile
 //       resolveOffset(last offset of the chunk) + commit offsets to Kafka (a failed commit is retried
 //                                        COMMIT_RETRIES times; the rows are stored, so a retry is always safe)
+//                                        crash point: consumer:after-offset-commit
 //
 // This is the ONLY place that resolves or commits offsets in this service.
 // With SINK_DLQ_ENABLED=false the old S2-F2/F3 behavior returns: a poison record throws and blocks its partition.
@@ -30,7 +32,7 @@ import { backoffMs, classifyDbError, errorCode, isBlocking } from '../sink/error
 import type { ErrorClass } from '../sink/errors.js';
 import { parseMessage } from '../sink/parse.js';
 import type { EventRow, ParseError, RawMessage } from '../sink/parse.js';
-import type { FaultInjector } from './fault-injector.js';
+import type { FaultInjector } from '@eventpulse/fault-injector';
 
 export class PoisonBatchError extends Error {
   readonly name = 'PoisonBatchError';
@@ -130,6 +132,8 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
       writeChunk: async (rows) => {
         const w = await deps.writer.writeChunk(rows);
         stats.observeDbWrite(w.durationMs, w.connectMs ?? 0, w.freshnessS ?? []);
+        if (w.conflicts?.length) stats.countConflicts(w.conflicts);
+        if (w.conflictCheckFailed) stats.conflictCheckErrors++;
         return w;
       },
     },
@@ -164,7 +168,7 @@ function failureReason(e: unknown, dlqEnabled: boolean): ChunkFailure {
 /** One chunk: parse, write, dead-letter, commit. Returns false if the partition was revoked meanwhile. */
 async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerDeps): Promise<boolean> {
   const { stats, faults } = deps;
-  faults.hit('before_parse', part.length);
+  faults.hit('consumer:before-parse', { rows: part.length });
   const good: { raw: RawMessage; row: EventRow }[] = [];
   const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
   for (const m of part) {
@@ -176,7 +180,7 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
     stats.countError('PERMANENT_PARSE', parseErrors.length);
     if (!deps.retry.dlqEnabled) throw new PoisonBatchError(parseErrors.map((p) => p.error));
   }
-  faults.hit('after_parse', part.length);
+  faults.hit('consumer:after-parse', { rows: part.length });
 
   if (deps.processingDelayMs > 0) {
     const w = deps.delayWindow;
@@ -190,7 +194,7 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
   }
 
   const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
-  faults.hit('after_db_commit', part.length);
+  faults.hit('consumer:after-db-commit', { rows: part.length });
 
   const dead: DeadLetter[] = [
     ...parseErrors.map((p) => ({ raw: p.raw, errorClass: 'PERMANENT_PARSE' as const, errorCode: p.error.code, errorMessage: p.error.message, attempts: 1 })),
@@ -217,6 +221,7 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
   const c0 = performance.now();
   await commitWithRetry(ctx, deps);
   stats.observeCommit(performance.now() - c0);
+  faults.hit('consumer:after-offset-commit', { rows: part.length });
   return true;
 }
 
