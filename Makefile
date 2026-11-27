@@ -1,37 +1,86 @@
-stage1-reset:
-	docker exec ep-postgres psql -U eventpulse -d  eventpulse -c "SELECT pg_stat_statements_reset(); TRUNCATE events;"
-stage1-migrate: stage2-migrate
-stage1-prod-start:
-	pnpm --filter @eventpulse/ingest-api start:prod
-stage1-prod-start-pinned:
-	pnpm --filter @eventpulse/ingest-api start:pinned
+# EventPulse: one entry point for the current pipeline (Stage 3: Correctness).
+# `make` or `make help` lists every target.
 
-# --- Stage 2 ---
-# Migrations now live with the service that owns the table (consumer-sink).
-stage2-migrate:
-	pnpm --filter @eventpulse/consumer-sink migrate:up
-stage2-kafka-up:
-	docker compose -f infra/compose/docker-compose.kafka.yml up -d
-stage2-kafka-down:
-	docker compose -f infra/compose/docker-compose.kafka.yml down
-stage2-build:
-	pnpm --filter @eventpulse/ingest-api build && pnpm --filter @eventpulse/consumer-sink build
-stage2-api-start:
-	pnpm --filter @eventpulse/ingest-api start:prod
-stage2-api-start-pinned:
-	pnpm --filter @eventpulse/ingest-api start:pinned
-stage2-consumer-start:
-	pnpm --filter @eventpulse/consumer-sink start:prod
-stage2-consumer-start-pinned:
-	pnpm --filter @eventpulse/consumer-sink start:pinned
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
 
-# One command for the whole pipeline (containers, topics, migrations, build, consumer, API) and its stop.
-stage2-up:
-	scripts/stage2-up.sh
-stage2-down:
-	scripts/stage2-down.sh
-stage2-lag:
+COMPOSE_CORE  := docker compose -f infra/compose/docker-compose.yml
+COMPOSE_KAFKA := docker compose -f infra/compose/docker-compose.kafka.yml
+SINK          := pnpm --filter @eventpulse/consumer-sink
+API           := pnpm --filter @eventpulse/ingest-api
+CORRECTNESS   := pnpm --filter @eventpulse/correctness-tests
+UNIT_PACKAGES := --filter "./packages/*" --filter "./services/*" --filter "./tools/*" --filter "./tests/*"
+TOXI_URL      ?= http://localhost:8474
+
+.PHONY: help
+help: ## List targets
+	@awk 'BEGIN {FS = ":.*## "} /^# ---/ {printf "\n%s\n", substr($$0, 7)} /^[a-z0-9-]+:.*## / {printf "  make %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# --- Pipeline ---
+.PHONY: up down lag audit reset
+up: ## Whole pipeline: containers, topics, migrations, build, consumer-sink, ingest-api (scripts/up.sh)
+	scripts/up.sh
+down: ## Stop ingest-api and consumer-sink gracefully (containers keep running)
+	scripts/down.sh
+lag: ## Consumer group lag per partition
 	scripts/lag.sh
-# S2-F7 audit: load + reconciliation. make stage2-audit RATE=500 DURATION=30s [RUN=a1b2c3d4]
-stage2-audit:
+audit: ## Load + reconciliation: make audit RATE=500 DURATION=30s [RUN=a1b2c3d4]
 	RATE=$(or $(RATE),200) DURATION=$(or $(DURATION),30s) $(if $(RUN),RUN_ID=$(RUN)) scripts/audit.sh run
+reset: ## DESTRUCTIVE clean slate: truncate events, recreate topics, delete the group (asks first)
+	scripts/reset.sh
+
+# --- Infrastructure ---
+.PHONY: infra-up infra-down kafka-up kafka-down toxiproxy-pg
+infra-up: ## Postgres, Prometheus, Grafana, exporters, Toxiproxy
+	$(COMPOSE_CORE) up -d
+infra-down: ## Stop the core containers (data volumes are kept)
+	$(COMPOSE_CORE) down
+kafka-up: ## 3 KRaft brokers + topic init + exporter
+	$(COMPOSE_KAFKA) up -d
+kafka-down: ## Stop the brokers
+	$(COMPOSE_KAFKA) down
+toxiproxy-pg: ## Create the Toxiproxy "pg" proxy (localhost:15434 -> postgres) if missing; e2e outage tests need it
+	@curl -sf $(TOXI_URL)/proxies/pg >/dev/null \
+	  && echo 'toxiproxy: proxy "pg" exists' \
+	  || { curl -sf -X POST $(TOXI_URL)/proxies -H 'Content-Type: application/json' \
+	         -d '{"name":"pg","listen":"0.0.0.0:15434","upstream":"postgres:5432","enabled":true}' >/dev/null \
+	       && echo 'toxiproxy: proxy "pg" created'; }
+
+# --- Database (db/migrations, run through consumer-sink, which owns the events table) ---
+.PHONY: migrate migrate-down migrate-test migrate-new
+migrate: ## Apply pending migrations to the dev database (services/consumer-sink/.env)
+	$(SINK) migrate:up
+migrate-down: ## Roll back the LAST migration on the dev database
+	$(SINK) migrate:down
+migrate-test: ## Apply pending migrations to the test database (services/consumer-sink/.env.test)
+	$(SINK) migrate:test
+migrate-new: ## New migration file: make migrate-new NAME=add_something
+	@test -n "$(NAME)" || { echo "usage: make migrate-new NAME=add_something"; exit 2; }
+	$(SINK) migrate:new $(NAME)
+
+# --- Build and run single services ---
+.PHONY: build api-start api-start-pinned consumer-start consumer-start-pinned
+build: ## Build the shared packages, ingest-api and consumer-sink
+	$(API) build && $(SINK) build
+api-start: ## ingest-api on :8000 (services/ingest-api/.env), foreground
+	$(API) start:prod
+api-start-pinned: ## Same, pinned with taskset to SERVER_CPUS (default 0,6)
+	$(API) start:pinned
+consumer-start: ## consumer-sink on :8001 (services/consumer-sink/.env), foreground
+	$(SINK) start:prod
+consumer-start-pinned: ## Same, pinned with taskset to CONSUMER_CPUS (default 0,6)
+	$(SINK) start:pinned
+
+# --- Tests ---
+.PHONY: test test-e2e correctness crash-matrix test-all
+test: ## Unit tests of every package, service, tool and the correctness suite (no infrastructure)
+	pnpm $(UNIT_PACKAGES) build --if-present >/dev/null
+	pnpm $(UNIT_PACKAGES) --workspace-concurrency=1 test
+test-e2e: toxiproxy-pg migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api
+	$(SINK) test:e2e
+	$(API) test:e2e
+correctness: migrate-test ## Correctness suite: log replay + crash matrix (regenerates docs/generated/crash-matrix.*)
+	$(CORRECTNESS) test:e2e
+crash-matrix: migrate-test ## Only the crash matrix; one point: make crash-matrix ONLY=consumer:after-db-commit
+	$(if $(ONLY),CRASH_MATRIX_ONLY=$(ONLY)) $(CORRECTNESS) crash-matrix
+test-all: test test-e2e correctness ## Everything above, in order

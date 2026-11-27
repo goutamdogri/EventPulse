@@ -16,10 +16,10 @@ events.raw (6 partitions) --> eachBatch (one partition, up to CONSUMER_MAX_BATCH
 ## Run
 
 ```bash
-make stage2-kafka-up        # 3 brokers + topics
-make stage2-migrate         # applies db/migrations (0004 adds events.stored_at, 0005 the (tenant_id, event_id) key)
-make stage2-build
-make stage2-consumer-start  # reads services/consumer-sink/.env (copy .env.example)
+make kafka-up               # 3 brokers + topics
+make migrate                # applies db/migrations (0004 adds events.stored_at, 0005 the (tenant_id, event_id) key)
+make build
+make consumer-start         # reads services/consumer-sink/.env (copy .env.example)
 ```
 
 Run more instances by giving each its own `METRICS_PORT`. With 6 partitions, up to 6 members get work and any extra members stay idle.

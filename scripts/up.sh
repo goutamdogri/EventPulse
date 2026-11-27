@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# One command for the whole Stage 2 pipeline (exit criterion "pipeline runs with one command"):
+# One command for the whole pipeline (make up):
 #   Postgres + observability containers, the 3 Kafka brokers + topics, migrations, build, consumer-sink, ingest-api.
-# The two Node processes run in the background; pids and logs go to .run/. Stop them with scripts/stage2-down.sh.
+# The two Node processes run in the background; pids and logs go to .run/. Stop them with make down (scripts/down.sh).
 # Uses each service's .env (services/ingest-api/.env, services/consumer-sink/.env).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RUN=.run; mkdir -p "$RUN"
 
 running() { [ -f "$RUN/$1.pid" ] && kill -0 "$(cat "$RUN/$1.pid")" 2>/dev/null; }
-if running ingest-api || running consumer-sink; then echo "already running (scripts/stage2-down.sh to stop)"; exit 1; fi
+if running ingest-api || running consumer-sink; then echo "already running (make down to stop)"; exit 1; fi
 
 echo "[1/6] Postgres + observability"
 docker compose -f infra/compose/docker-compose.yml up -d >/dev/null
@@ -36,4 +36,4 @@ echo "[5/6] consumer-sink (group sink-postgres, :8001)"
 start consumer-sink consumer-sink 8001
 echo "[6/6] ingest-api (:8000)"
 start ingest-api ingest-api 8000
-echo "pipeline up. logs: $RUN/*.log   lag: scripts/lag.sh   audit: make stage2-audit   stop: make stage2-down"
+echo "pipeline up. logs: $RUN/*.log   lag: scripts/lag.sh   audit: make audit   stop: make down"

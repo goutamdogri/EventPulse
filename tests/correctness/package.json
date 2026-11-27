@@ -6,6 +6,7 @@
   "license": "UNLICENSED",
   "type": "module",
   "scripts": {
+    "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector build",
     "test": "vitest run",
     "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink build",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",

@@ -83,7 +83,7 @@ Notes:
 | toxiproxy proxies | existing `ep-toxiproxy` | Add proxies `redis` (16379 -> redis:6379) and `registry` (18081 -> schema-registry:8081), created by a script `scripts/toxiproxy-setup.sh` that is idempotent. Services connect through the proxy when `*_VIA_TOXIPROXY=true`. |
 | New topics | `kafka-init` | `events.retry.1`, `events.retry.2`, `events.retry.3` (same partition count as `events.raw`, RF=3, retention >= longest tier x 10), `config.changed` (RF=3, `cleanup.policy=compact`, key = tenant_id). |
 
-Add `make stage3-up` / `make stage3-down` (extends `scripts/stage2-up.sh`: containers, toxiproxy setup, topics, migrations, schema registration, build, consumer, retry consumer, relay, admin API, ingest API) and `make stage3-correctness` (runs the full `tests/correctness` suite and regenerates the crash matrix).
+Add `make up` / `make down` (extends `scripts/up.sh`: containers, toxiproxy setup, topics, migrations, schema registration, build, consumer, retry consumer, relay, admin API, ingest API) and `make correctness` (runs the full `tests/correctness` suite and regenerates the crash matrix).
 
 ---
 
@@ -326,7 +326,7 @@ Steps 1 and 2 already compute the numbers. This step makes **every** layer repor
   - `unique_accepted = 202_new` (from the load generator's own record of distinct `(tenant, event_id)` that got 202)
   - `stored + dlq_unique + in_flight (raw lag + retry lag) - unique_accepted = unexplained`, must be **0** once lag is 0.
   - `kafka_messages - unique_accepted = duplicates_in_kafka`, and it must equal `ep_sink_duplicates_total` + DLQ duplicates (every extra copy is accounted for).
-- `scripts/audit.sh` and `make stage3-audit` (same interface as Stage 2, plus `IDEM_KEYS=reuse` to make the k6 script resend a share of requests with the same key).
+- `scripts/audit.sh` and `make audit` (same interface as Stage 2, plus `IDEM_KEYS=reuse` to make the k6 script resend a share of requests with the same key).
 - Update `loadtests/k6/stage-2/ingest-kafka.js` (or a stage-3 copy) to send `Idempotency-Key` and optionally resend a configurable fraction.
 
 **E. Logs.** One structured log line per batch with duplicates (`{partition, attempted, inserted, duplicates, reprocessed, conflicts}`), never one per row.
@@ -346,7 +346,7 @@ Every place a duplicate can be dropped or created: API (replay, in progress, mis
 | e2e | Offset reset replay | `cause="reprocessed"` = replayed count |
 | e2e | Conflict | `ep_sink_conflicting_duplicates_total = 1` |
 | e2e | Every metric in the catalogue is present on `/metrics` and in `/debug/stats` after startup (value 0 is fine) | All present |
-| Audit | `make stage3-audit` on a clean run and on a run with a crash | `unexplained = 0` in both |
+| Audit | `make audit` on a clean run and on a run with a crash | `unexplained = 0` in both |
 
 ### 3.4 Done when
 
@@ -405,7 +405,7 @@ Done before retries and replay so that the retry, DLQ and replay code is written
 
 - `check`: starts from an **empty ephemeral registry** (CI service container), sets each subject's compatibility level from `subjects.json`, registers every version **in order**, and fails if any version is rejected. This checks the whole history under the transitive rule, not only the last pair.
 - `check --against <registry-url>`: checks the newest local version against a running registry (`POST /compatibility/subjects/{s}/versions?verbose=true`), printing the registry's reasons.
-- `register --registry <url>`: idempotent registration for deploys (`make stage3-schemas`).
+- `register --registry <url>`: idempotent registration for deploys (`make schemas`).
 - Exit codes: 0 compatible, 1 incompatible (with messages), 2 infrastructure error.
 - `.github/workflows/ci.yml`: job `schema-check` with a Kafka + registry service, runs `pnpm --filter @eventpulse/schema-check check`. Also a job for unit tests of all packages. (No CI exists yet; this creates it.)
 
@@ -445,7 +445,7 @@ Producer serialization, consumer deserialization, schema resolution between v1 a
 
 ### 4.4 Done when
 
-- [ ] Registry in compose; schemas registered by `make stage3-schemas`.
+- [ ] Registry in compose; schemas registered by `make schemas`.
 - [ ] API produces Avro with a cached id, no runtime auto-registration.
 - [ ] Sink reads Avro and legacy JSON; registry failures classified correctly.
 - [ ] Test helpers encode Avro by default; step 1 to 3 suites and the crash matrix pass under Avro.
@@ -822,14 +822,14 @@ Also a short section **"Where exactly-once stops"**: Kafka's idempotent producer
 
 **B. Stable test ids.** Every test referenced by the document has a stable id in its name, for example `it('[G2.triple-replay] replaying the log three times leaves the table unchanged', ...)`. Add the ids to the existing tests from steps 1 to 8 now.
 
-**C. Crash matrix in the document.** `make stage3-correctness` runs every crash-matrix scenario (consumer, API, retry, DLQ, replay, relay, admin) and regenerates `docs/generated/crash-matrix.md`. The guarantees document embeds or links it, with the run date and commit hash in the generated header. Columns: crash point, duplicates produced, duplicates processed, duplicates stored, lost, recovery time, notes.
+**C. Crash matrix in the document.** `make correctness` runs every crash-matrix scenario (consumer, API, retry, DLQ, replay, relay, admin) and regenerates `docs/generated/crash-matrix.md`. The guarantees document embeds or links it, with the run date and commit hash in the generated header. Columns: crash point, duplicates produced, duplicates processed, duplicates stored, lost, recovery time, notes.
 
 **D. `tools/guarantee-check`**
 
 - Parses `docs/delivery-guarantees.md` for every `[test: <id>]`.
 - Runs (or reads) the Vitest JSON report from `tests/correctness` and the services' e2e suites (`--reporter=json --outputFile=...`).
 - Fails if: a claim has no test reference; a referenced id does not exist; a referenced test was skipped or failed; the crash matrix is older than the latest change to `packages/fault-injector/src/points.ts` or has a row with `lost > 0` or `duplicates stored > 0`.
-- Runs in CI after the test jobs (`.github/workflows/ci.yml`, job `guarantees`). Decision: CI runs unit tests, `schema-check` and `guarantee-check`. The infrastructure-heavy e2e suites (Kafka, Redis, registry, Postgres) run locally with `make stage3-correctness`, which writes `docs/generated/test-report.json` (Vitest JSON, with the commit hash). That report is committed, and in CI `guarantee-check` reads it and fails if its commit is older than the last change to any source or test file.
+- Runs in CI after the test jobs (`.github/workflows/ci.yml`, job `guarantees`). Decision: CI runs unit tests, `schema-check` and `guarantee-check`. The infrastructure-heavy e2e suites (Kafka, Redis, registry, Postgres) run locally with `make correctness`, which writes `docs/generated/test-report.json` (Vitest JSON, with the commit hash). That report is committed, and in CI `guarantee-check` reads it and fails if its commit is older than the last change to any source or test file.
 
 **E. Index.** `docs/README.md` (or a section in the root README) linking the guarantees document, the generated crash matrix, ADRs 0002 to 0007, the three runbooks and the updated API contract.
 
@@ -845,7 +845,7 @@ Every claim maps to at least one passing test; every guarantee from the PRD list
 | e2e | `G4.per-key-order` (new) | Offsets follow sequence order per key |
 | Unit | `guarantee-check` against fixture docs: missing test id, failed test, skipped test, stale matrix, matrix with loss | Each fails with a clear message; a good fixture passes |
 | CI | Remove a test id from a test file on a branch | `guarantees` job fails |
-| Full suite | `make stage3-correctness` from a clean `make stage3-up` | All suites green; crash matrix regenerated with 0 lost and 0 duplicates stored |
+| Full suite | `make correctness` from a clean `make up` | All suites green; crash matrix regenerated with 0 lost and 0 duplicates stored |
 
 ### 9.4 Done when
 

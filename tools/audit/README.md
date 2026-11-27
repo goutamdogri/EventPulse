@@ -3,11 +3,11 @@
 One command that reconciles a load run across the whole pipeline: **requests sent (k6) vs acknowledged (202) vs the API's acked counter vs new Kafka records vs distinct rows in Postgres**, plus duplicates, DLQ, retention and lag.
 
 ```bash
-make stage2-up                                   # whole pipeline, one command
-make stage2-audit RATE=500 DURATION=30s          # load + audit (= scripts/audit.sh run)
+make up                                         # whole pipeline, one command
+make audit RATE=500 DURATION=30s          # load + audit (= scripts/audit.sh run)
 scripts/audit.sh run -- <your command>           # audit around any command (gets RUN_ID, SUMMARY_PATH, API_KEY)
 scripts/audit.sh start [RUN_ID] / end <RUN_ID>   # the two halves, e.g. to rerun "end" after a drain
-make stage2-down
+make down
 ```
 
 How it works:
