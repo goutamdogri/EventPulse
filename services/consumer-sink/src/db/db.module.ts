@@ -6,10 +6,13 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { Pool } from 'pg';
-import { AppConfig, CONFIG } from '../config.js';
+import { CONFIG } from '../config.js';
+import type { AppConfig } from '../config.js';
 
 export const PG_POOL = Symbol('PG_POOL');
 
+// Runs in onApplicationShutdown, i.e. after the consumer disconnected in beforeApplicationShutdown,
+// so the last batch can still finish its transaction.
 @Injectable()
 class DbShutdown implements OnApplicationShutdown {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
@@ -25,7 +28,6 @@ class DbShutdown implements OnApplicationShutdown {
     {
       provide: PG_POOL,
       inject: [CONFIG],
-
       useFactory: (c: AppConfig) => {
         const pool = new Pool({
           connectionString: c.databaseUrl,
@@ -33,16 +35,13 @@ class DbShutdown implements OnApplicationShutdown {
           connectionTimeoutMillis: c.pgConnTimeoutMs || undefined,
           statement_timeout: c.pgStatementTimeoutMs || undefined,
           idleTimeoutMillis: 30_000,
-          application_name: 'ingest-api', // shows up in pg_stat_activity
+          application_name: 'consumer-sink', // shows up in pg_stat_activity
         });
         // Without this, an error on an idle client crashes the process.
-        pool.on('error', (e) =>
-          console.error('[pg idle client error]', e.message),
-        );
+        pool.on('error', (e) => console.error('[pg idle client error]', e.message));
         return pool;
       },
     },
-
     DbShutdown,
   ],
   exports: [PG_POOL],

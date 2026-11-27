@@ -5,48 +5,9 @@ import {
   HttpException,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { KafkaUnavailableError, OverloadedError } from '../kafka/errors.js';
+import { BatcherClosedError, MessageTooLargeError } from '../kafka/micro-batcher.js';
 import { MetricsService } from '../observability/metrics.service.js';
-
-const TRANSIENT_CODES = new Set([
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ETIMEDOUT',
-  'EPIPE',
-  'ENOTFOUND',
-]);
-
-function isTransientDbError(e: any): boolean {
-  const code: string | undefined = e?.code;
-  if (code && (TRANSIENT_CODES.has(code) || /^(08|53|57)/.test(code)))
-    return true; // conn / resources / shutdown / query_canceled (57014)
-  const msg = String(e?.message ?? '');
-  return /timeout exceeded when trying to connect|Connection terminated|connection timeout/i.test(
-    msg,
-  );
-}
-
-// B2: why did the DB call fail? Used only as a metric label.
-function dbErrorType(e: any): string {
-  const code: string | undefined = e?.code;
-  const msg = String(e?.message ?? '');
-  if (code === '53300' || /too many clients/i.test(msg))
-    return 'too_many_clients'; // Postgres refused: max_connections reached
-  if (code === '57014' || /statement timeout/i.test(msg))
-    return 'statement_timeout';
-  if (/timeout exceeded when trying to connect/i.test(msg))
-    return 'pool_timeout'; // waited longer than connectionTimeoutMillis in the pool queue
-  return 'other';
-}
-
-// B8: raw error code as a metric label. Keeps the label set small: SQLSTATE / Node code, or a fixed word.
-function dbErrorCode(e: any): string {
-  const code: string | undefined = e?.code;
-  if (code && /^[0-9A-Z_]{4,20}$/.test(code)) return code;
-  const msg = String(e?.message ?? '');
-  if (/timeout exceeded when trying to connect/i.test(msg)) return 'pool_timeout';
-  if (/Connection terminated/i.test(msg)) return 'terminated';
-  return 'none';
-}
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -70,16 +31,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
         message: err.message,
       });
     }
-    if (isTransientDbError(err)) {
-      this.m.dbErrors.inc();
-      this.m.dbErrorsByType.inc({ type: dbErrorType(err) });
-      this.m.dbErrorsByCode.inc({ code: dbErrorCode(err) });
-      res.setHeader('Retry-After', String(this.retryAfterS));
-      return res.status(503).json({
-        statusCode: 503,
-        error: 'Service Unavailable',
-        message: 'Database unavailable',
-      });
+    // Event larger than the batch byte cap (only reachable if BODY_LIMIT is raised above it): the client's
+    // fault, never retryable, so 413 like the edge limit, not 500.
+    if (err instanceof MessageTooLargeError) {
+      return res.status(413).json({ statusCode: 413, error: 'Payload Too Large', message: err.message });
+    }
+    // Kafka unavailable, ingest queue full, or the instance is shutting down (SIGTERM drain in progress):
+    // 503 + Retry-After. The client retries with the same event_id (another instance, or this one restarted).
+    if (err instanceof OverloadedError || err instanceof KafkaUnavailableError || err instanceof BatcherClosedError) {
+      const reason =
+        err instanceof OverloadedError ? 'overloaded' : err instanceof BatcherClosedError ? 'shutting_down' : 'kafka_unavailable';
+      this.m.count503(reason);
+      return res
+        .status(503)
+        .set('Retry-After', String(this.retryAfterS))
+        .json({
+          statusCode: 503,
+          error: 'Service Unavailable',
+          message: 'Ingest temporarily unavailable',
+          reason,
+        });
     }
     console.error('[unhandled]', err);
     return res

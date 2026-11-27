@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Headers,
   HttpCode,
   Post,
   UseGuards,
@@ -14,11 +15,17 @@ import { ApiKeyGuard, TenantId } from '../auth/api-key.guard.js';
 export class EventsController {
   constructor(private readonly svc: EventsService) {}
 
-  // In Stage 1, 202 means "committed to Postgres". 
+  // Stage 2: 202 means "durably appended to events.raw under the configured acks policy".
+  // It does NOT mean the event is in Postgres yet (see docs/api-contract.md).
   @Post()
   @HttpCode(202)
-  async ingest(@Body() dto: CreateEventDto, @TenantId() tenantId: string) {
-    await this.svc.insert(tenantId, dto);
+  async ingest(
+    @Body() dto: CreateEventDto,
+    @TenantId() tenantId: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    const receivedAt = new Date();
+    await this.svc.publish(tenantId, dto, receivedAt, requestId);
     return { event_id: dto.event_id };
   }
 }

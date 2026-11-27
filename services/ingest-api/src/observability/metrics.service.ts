@@ -1,7 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import type { NextFunction, Request, Response } from 'express';
-import { Pool } from 'pg';
 import {
   Counter,
   Gauge,
@@ -9,14 +8,15 @@ import {
   Registry,
   collectDefaultMetrics,
 } from '@prometheus-io/client';
-import { PG_POOL } from '../db/db.module.js';
-
-const sum = async (c: Counter<string>) =>
-  (await c.get()).values.reduce((a, v) => a + v.value, 0);
+import { BatcherService } from '../kafka/batcher.service.js';
+import { KafkaHealthService } from '../kafka/kafka-health.service.js';
+import { ProducerService } from '../kafka/producer.service.js';
+import { CONFIG } from '../config.js';
+import type { AppConfig } from '../config.js';
+import { KafkaMetrics } from './kafka-metrics.js';
 
 @Injectable()
 export class MetricsService {
-  readonly registry = new Registry();
   private readonly startedAt = Date.now();
   private readonly loop = monitorEventLoopDelay({ resolution: 10 });
 
@@ -25,17 +25,23 @@ export class MetricsService {
   readonly inFlight: Gauge<string>;
   readonly connOpen: Gauge<string>;
   readonly connTotal: Counter<string>;
-  readonly eventsInserted: Counter<string>;
-  readonly eventsDuplicate: Counter<string>;
-  readonly dbErrors: Counter<string>;
-  readonly dbErrorsByType: Counter<string>;
-  readonly dbErrorsByCode: Counter<string>; // B8
-  readonly poolWait: Histogram<string>;
-  readonly pgQuery: Histogram<string>;
-  readonly counterUpdate: Histogram<string>;
 
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {
+  constructor(
+    readonly registry: Registry,
+    private readonly kafka: KafkaMetrics,
+    private readonly batcher: BatcherService,
+    private readonly producer: ProducerService,
+    private readonly health: KafkaHealthService,
+    @Inject(CONFIG) private readonly cfg: AppConfig,
+  ) {
     const registers = [this.registry];
+    // Live values (queue gauges, breaker, connection, health) are read at scrape / snapshot time.
+    kafka.bind({
+      batcher: () => batcher.stats(),
+      breaker: () => batcher.breaker.state(),
+      connected: () => producer.isConnected(),
+      healthy: () => health.healthy(),
+    });
     collectDefaultMetrics({ register: this.registry });
     this.loop.enable();
 
@@ -74,119 +80,6 @@ export class MetricsService {
       registers,
     });
 
-    this.eventsInserted = new Counter({
-      name: 'ep_events_inserted_total',
-      help: 'Rows actually inserted.',
-      registers,
-    });
-
-    this.eventsDuplicate = new Counter({
-      name: 'ep_events_duplicate_total',
-      help: 'Events ignored by ON CONFLICT DO NOTHING.',
-      registers,
-    });
-
-    this.dbErrors = new Counter({
-      name: 'ep_db_errors_total',
-      help: 'Requests failed by DB or pool errors (503).',
-      registers,
-    });
-
-    // B2: same 503s as ep_db_errors_total, split by cause. ep_db_errors_total is kept unchanged.
-    // type = pool_timeout | too_many_clients | statement_timeout | other
-    this.dbErrorsByType = new Counter({
-      name: 'ep_db_errors_by_type_total',
-      help: 'DB/pool errors turned into 503, by cause.',
-      labelNames: ['type'],
-      registers,
-    });
-
-    // B8: the same 503s again, but by the raw error code of the failure (Postgres SQLSTATE such as 57P01
-    // admin_shutdown / 57P03 cannot_connect_now, Node codes such as ECONNREFUSED / ECONNRESET, or one of the words
-    // pool_timeout / terminated / none). ep_db_errors_by_type_total is kept unchanged.
-    this.dbErrorsByCode = new Counter({
-      name: 'ep_db_errors_by_code_total',
-      help: 'DB/pool errors turned into 503, by raw error code.',
-      labelNames: ['code'],
-      registers,
-    });
-
-    // B8: pool life cycle. connects - removes = connections alive; a restart should show a burst of removes
-    // (dead connections thrown away) followed by a burst of connects (new ones).
-    const poolEvents = (name: string, help: string, event: 'connect' | 'remove' | 'error') => {
-      const c = new Counter({ name, help, registers });
-      pool.on(event as 'connect', () => c.inc());
-    };
-    poolEvents('ep_pg_pool_connects_total', 'pg pool: new connections opened to Postgres', 'connect');
-    poolEvents('ep_pg_pool_removes_total', 'pg pool: connections destroyed and removed from the pool', 'remove');
-    poolEvents('ep_pg_pool_idle_errors_total', 'pg pool: errors on idle connections (e.g. Postgres went away)', 'error');
-
-    this.poolWait = new Histogram({
-      name: 'ep_pg_pool_wait_seconds',
-      help: 'Time waiting to acquire a pool connection.',
-      buckets: [
-        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5,
-      ],
-      registers,
-    });
-
-    this.pgQuery = new Histogram({
-      name: 'ep_pg_query_duration_seconds',
-      help: 'INSERT execution time on an acquired connection.',
-      buckets: [
-        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5,
-      ],
-      registers,
-    });
-
-    // B4: the per-tenant counter UPDATE (includes the wait for the row lock). No tenant label on purpose.
-    this.counterUpdate = new Histogram({
-      name: 'ep_pg_counter_update_seconds',
-      help: 'Time of UPDATE tenant_counters (COUNTER_MODE=hot), including the row-lock wait.',
-      buckets: [
-        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
-      ],
-      registers,
-    });
-
-    const pool_ = this.pool;
-    new Gauge({
-      name: 'ep_pg_pool_total',
-      help: 'pool.totalCount',
-      registers,
-      collect() {
-        this.set(pool_.totalCount);
-      },
-    });
-
-    new Gauge({
-      name: 'ep_pg_pool_idle',
-      help: 'pool.idleCount',
-      registers,
-      collect() {
-        this.set(pool_.idleCount);
-      },
-    });
-
-    new Gauge({
-      name: 'ep_pg_pool_waiting',
-      help: 'pool.waitingCount',
-      registers,
-      collect() {
-        this.set(pool_.waitingCount);
-      },
-    });
-
-    // B2: the configured pool size, so a panel can show total vs max
-    new Gauge({
-      name: 'ep_pg_pool_max',
-      help: 'configured pool max (PG_POOL_MAX)',
-      registers,
-      collect() {
-        this.set((pool_ as any).options?.max ?? 0);
-      },
-    });
-
     const loop = this.loop;
     new Gauge({
       name: 'eventpulse_event_loop_delay_seconds',
@@ -200,6 +93,11 @@ export class MetricsService {
         loop.reset();
       },
     });
+  }
+
+  /** 503s by reason (overloaded | kafka_unavailable | shutting_down): ep_http_503_total + /debug/stats. */
+  count503(reason: string) {
+    this.kafka.count503(reason);
   }
 
   middleware() {
@@ -231,40 +129,50 @@ export class MetricsService {
     });
   }
 
+  /** /debug/stats (S2-F6 shape). Includes the effective config, so every result records its settings. */
   async snapshot() {
-    const byClass: Record<string, number> = {};
-
+    const byStatus: Record<string, number> = {};
+    let requests = 0;
     for (const v of (await this.httpRequests.get()).values) {
-      const k = `${String(v.labels.status)[0]}xx`;
-      byClass[k] = (byClass[k] ?? 0) + v.value;
+      const k = String(v.labels.status);
+      byStatus[k] = (byStatus[k] ?? 0) + v.value;
+      requests += v.value;
     }
-
     const inFlight = (await this.inFlight.get()).values[0]?.value ?? 0;
+    const k = await this.kafka.snapshot();
+    const mem = process.memoryUsage();
     return {
       uptime_s: Math.round((Date.now() - this.startedAt) / 1000),
-      pool: {
-        max: (this.pool as any).options?.max,
-        total: this.pool.totalCount,
-        idle: this.pool.idleCount,
-        waiting: this.pool.waitingCount,
-        // B10: the deadlines the pool really runs with (0 = no deadline). run.sh checks these after every restart.
-        conn_timeout_ms: (this.pool as any).options?.connectionTimeoutMillis ?? 0,
-        statement_timeout_ms: (this.pool as any).options?.statement_timeout ?? 0,
-      },
-      // Note: this histogram is reset on every Prometheus scrape, so these are "since last scrape".
+      memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external },
+      // This histogram is reset on every Prometheus scrape, so these are "since last scrape".
       event_loop_delay_ms: {
         p50: this.loop.percentile(50) / 1e6,
         p99: this.loop.percentile(99) / 1e6,
         max: this.loop.max / 1e6,
       },
-      in_flight: inFlight,
-      requests_by_status_class: byClass,
-      events: {
-        inserted: await sum(this.eventsInserted),
-        duplicates: await sum(this.eventsDuplicate),
-        db_errors: await sum(this.dbErrors),
+      http: { requests, in_flight: inFlight, by_status: byStatus, '503_by_reason': k.http_503_by_reason },
+      batcher: k.batcher,
+      producer: k.producer,
+      kafka_health: this.health.snapshot(),
+      config: {
+        topic: this.cfg.topic,
+        acks: this.cfg.producer.acks,
+        compression: this.cfg.producer.compression,
+        idempotent: this.cfg.producer.idempotent,
+        linger_ms: this.cfg.producer.lingerMs,
+        delivery_timeout_ms: this.cfg.producer.deliveryTimeoutMs,
+        batch_max_messages: this.cfg.batcher.maxMessages,
+        batch_max_wait_ms: this.cfg.batcher.maxWaitMs,
+        batch_max_bytes: this.cfg.batcher.maxBytes,
+        batch_max_queue: this.cfg.batcher.maxQueue,
+        batch_max_queue_bytes: this.cfg.batcher.maxQueueBytes,
+        batch_max_in_flight: this.cfg.batcher.maxInFlight,
+        send_timeout_ms: this.cfg.batcher.sendTimeoutMs,
+        breaker_failures: this.cfg.breaker.failures,
+        breaker_cooldown_ms: this.cfg.breaker.cooldownMs,
+        key_mode: this.cfg.keyMode,
+        brokers: this.cfg.kafka.brokers,
       },
-      memory: process.memoryUsage(),
     };
   }
 }

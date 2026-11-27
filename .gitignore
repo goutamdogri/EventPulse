@@ -21,3 +21,5 @@ dist/
 
 # cache
 __pycache__/
+# Stage 2 pipeline: pid files and logs of the processes started by scripts/stage2-up.sh
+.run/

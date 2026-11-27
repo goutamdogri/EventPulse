@@ -1,0 +1,23 @@
+{
+  "name": "@eventpulse/audit",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S2-F7 one-command audit: requests sent vs acknowledged vs Kafka offsets vs distinct Postgres rows.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "audit": "node src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@eventpulse/kafka-config": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

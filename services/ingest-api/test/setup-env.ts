@@ -3,11 +3,8 @@ import { resolve } from 'node:path';
 
 config({ path: resolve(import.meta.dirname, '../.env.test'), quiet: true });
 
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    'DATABASE_URL is required for e2e tests. Copy .env.test.example to .env.test and set DATABASE_URL.',
-  );
-}
+// Stage 2: e2e tests need the Kafka cluster (infra/compose/docker-compose.kafka.yml), not Postgres.
+// KAFKA_BROKERS defaults to the host listeners localhost:9092,9094,9096 when unset.
 
 const TEST_API_KEY = 'key_a:tenant_a';
 const configuredKeys = (process.env.API_KEYS ?? '').split(',').filter(Boolean);

@@ -1,0 +1,154 @@
+# EventPulse Stage 2: 3-broker Kafka cluster in KRaft mode (no ZooKeeper) + one-shot topic creation.
+#
+# Run from this directory:
+#   docker compose -f docker-compose.kafka.yml up -d
+#   docker compose -f docker-compose.kafka.yml logs kafka-init     # topic describe output
+#
+# Its own compose project ("eventpulse-kafka"), separate from the observability/Postgres stack, so that
+# `up --remove-orphans` on either file never removes the other's containers, and killing brokers in
+# experiments never touches Postgres or Prometheus.
+#
+# Listeners (see notebook/stage-2/learning/Kafka/listeners.md for why each one exists):
+#   INTERNAL   kafkaN:19092             broker <-> broker replication, CLI tools run inside containers
+#   EXTERNAL   localhost:9092/9094/9096  clients on the host (ingest-api, consumer-sink, k6 helpers)
+#   CONTROLLER kafkaN:9093              KRaft quorum traffic only, never advertised to clients
+#
+# Resources (record these with every result): each broker gets 1 CPU and 1 GiB (512 MiB heap), all three
+# share the cpuset below. CPU layout of the dev machine is in docker-compose.yml; cores 3,9,4,10 are not
+# used by Postgres (1,7,2,8), the monitoring stack (5,11) or the Node server (0,6).
+#
+# Version: pinned. Check `docker compose -f docker-compose.kafka.yml images` into every result.
+
+name: eventpulse-kafka
+
+x-kafka-cpus: &kafka-cpus "3,9,4,10"
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:4.3.2
+  cpuset: *kafka-cpus
+  cpus: 1
+  mem_limit: 1g
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+    interval: 10s
+    timeout: 10s
+    start_period: 20s
+    retries: 12
+
+x-kafka-env: &kafka-env
+  # Same id on all three brokers: they format their storage as one cluster.
+  # Generate once: docker run --rm apache/kafka:4.3.2 /opt/kafka/bin/kafka-storage.sh random-uuid
+  CLUSTER_ID: "${KAFKA_CLUSTER_ID:?set KAFKA_CLUSTER_ID in infra/compose/.env, see .env.example}"
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  # Durability defaults: RF 3, and acks=all writes need 2 in-sync replicas.
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+  # A typo in a topic name must fail loudly, not silently create a 1-partition topic.
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+
+services:
+  kafka1:
+    <<: *kafka-common
+    container_name: ep-kafka1
+    hostname: kafka1
+    ports:
+      - "9092:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:19092,EXTERNAL://localhost:9092
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+
+  kafka2:
+    <<: *kafka-common
+    container_name: ep-kafka2
+    hostname: kafka2
+    ports:
+      - "9094:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:19092,EXTERNAL://localhost:9094
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
+
+  kafka3:
+    <<: *kafka-common
+    container_name: ep-kafka3
+    hostname: kafka3
+    ports:
+      - "9096:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:19092,EXTERNAL://localhost:9096
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
+
+  # One-shot: create the topics (idempotent), then print leader/ISR for every partition.
+  kafka-init:
+    image: apache/kafka:4.3.2
+    container_name: ep-kafka-init
+    cpuset: *kafka-cpus
+    restart: "no"
+    depends_on:
+      kafka1: { condition: service_healthy }
+      kafka2: { condition: service_healthy }
+      kafka3: { condition: service_healthy }
+    environment:
+      BOOTSTRAP: kafka1:19092,kafka2:19092,kafka3:19092
+      EVENTS_RAW_PARTITIONS: ${EVENTS_RAW_PARTITIONS:-6}
+      EVENTS_RAW_RETENTION_MS: ${EVENTS_RAW_RETENTION_MS:-86400000}   # 24 h
+      EVENTS_DLQ_RETENTION_MS: ${EVENTS_DLQ_RETENTION_MS:-604800000}  # 7 days
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        T=/opt/kafka/bin/kafka-topics.sh
+        $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic events.raw \
+          --partitions "$$EVENTS_RAW_PARTITIONS" --replication-factor 3 \
+          --config min.insync.replicas=2 --config retention.ms="$$EVENTS_RAW_RETENTION_MS"
+        $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic events.dlq \
+          --partitions 3 --replication-factor 3 \
+          --config min.insync.replicas=2 --config retention.ms="$$EVENTS_DLQ_RETENTION_MS"
+        $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.raw
+        $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.dlq
+
+  # K4: Kafka metrics for Prometheus (leader and ISR per partition, brokers seen, offsets). The Kafka brokers expose no
+  # Prometheus metrics themselves. It talks to all three brokers on the internal listener, so when one is killed it can
+  # still ask the others. Prometheus (another compose project) scrapes it as host.docker.internal:9308.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: ep-kafka-exporter
+    cpuset: "5,11"                       # the monitoring cores, away from the brokers (3,9,4,10)
+    restart: unless-stopped
+    ports:
+      - "9308:9308"
+    command:
+      - --kafka.server=kafka1:19092
+      - --kafka.server=kafka2:19092
+      - --kafka.server=kafka3:19092
+      - --refresh.metadata=2s            # default 30 s is too slow to see a leader change
+      - --topic.filter=^(k4-.*|events\..*)$
+      - --group.filter=.*
+
+volumes:
+  kafka1-data:
+    name: eventpulse-kafka1-data
+  kafka2-data:
+    name: eventpulse-kafka2-data
+  kafka3-data:
+    name: eventpulse-kafka3-data
