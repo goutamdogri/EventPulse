@@ -424,3 +424,70 @@ describe('S2-F4 poison handling', () => {
     expect(s.dlq.publish).not.toHaveBeenCalled();
   });
 });
+
+describe('S3-F3 duplicates by cause', () => {
+  /** A writer that reports every row whose event_id is in `stored` as a duplicate (like ON CONFLICT DO NOTHING). */
+  function dedupWriter(stored: Set<string>) {
+    return async (rows: EventRow[]) => {
+      const dups = rows.filter((r) => stored.has(r.event_id));
+      rows.forEach((r) => stored.add(r.event_id));
+      return {
+        attempted: rows.length,
+        inserted: rows.length - dups.length,
+        durationMs: 1,
+        duplicateKeys: dups.map((r) => ({ tenant_id: r.tenant_id, event_id: r.event_id, partition: r.partition, offset: r.offset })),
+      };
+    };
+  }
+  const fakeProgress = (max: bigint | null | undefined) => {
+    const advanced: string[] = [];
+    return {
+      advanced,
+      known: vi.fn(async () => max),
+      advance: vi.fn((_p: number, o: string) => void advanced.push(o)),
+      forget: vi.fn(),
+    };
+  };
+
+  it('a re-read chunk below the stored max is reprocessed; a new offset with a stored key is redelivered', async () => {
+    const ms = msgs(4); // offsets n+1..n+4
+    const stored = new Set<string>();
+    const s = setup({ write: dedupWriter(stored), maxRows: 10 });
+    await handleBatch(s.ctx(ms), { ...s.deps, progress: fakeProgress(undefined) }); // first time: all new
+    // Same 4 records again (offset reset): their offsets are at or below the stored max -> reprocessed.
+    const maxOffset = BigInt(ms[3].offset);
+    const lines: string[] = [];
+    await handleBatch(s.ctx(ms), { ...s.deps, progress: fakeProgress(maxOffset), log: (l) => lines.push(l) });
+    expect(s.stats.duplicatesByCause).toMatchObject({ reprocessed: 4, redelivered: 0 });
+    expect(s.stats.reprocessedMessages).toBe(4);
+    // A client retry: the same event at a NEW offset -> redelivered.
+    const retry = { ...ms[0], offset: String(Number(ms[3].offset) + 1) };
+    await handleBatch(s.ctx([retry]), { ...s.deps, progress: fakeProgress(maxOffset) });
+    expect(s.stats.duplicatesByCause).toMatchObject({ reprocessed: 4, redelivered: 1, unknown: 0 });
+    expect(s.stats.duplicates).toBe(5); // the causes add up to attempted - inserted
+    expect(JSON.parse(lines[0])).toMatchObject({ msg: 'duplicates', duplicates: 4, reprocessed: 4, redelivered: 0, reprocessed_messages: 4 });
+  });
+
+  it('advances the progress to the highest written offset, and asks only once per chunk', async () => {
+    const ms = msgs(3);
+    const s = setup({ maxRows: 10 });
+    const p = fakeProgress(undefined);
+    await handleBatch(s.ctx(ms), { ...s.deps, progress: p });
+    expect(p.known).toHaveBeenCalledTimes(1);
+    expect(p.advanced).toEqual([ms[2].offset]);
+  });
+
+  it('an unknown stored max counts the duplicates as unknown', async () => {
+    const ms = msgs(2);
+    const s = setup({ write: dedupWriter(new Set(ms.map((m) => JSON.parse(m.value!.toString()).event_id))), maxRows: 10 });
+    await handleBatch(s.ctx(ms), { ...s.deps, progress: fakeProgress(null) });
+    expect(s.stats.duplicatesByCause).toMatchObject({ reprocessed: 0, redelivered: 0, unknown: 2 });
+  });
+
+  it('no log line for a chunk without duplicates', async () => {
+    const s = setup({ maxRows: 10 });
+    const lines: string[] = [];
+    await handleBatch(s.ctx(msgs(3)), { ...s.deps, progress: fakeProgress(undefined), log: (l) => lines.push(l) });
+    expect(lines).toEqual([]);
+  });
+});

@@ -19,6 +19,7 @@ import { LagMonitor } from '../observability/lag.js';
 import { SinkStats } from '../observability/sink-stats.js';
 import { BatchWriter } from '../sink/batch-writer.js';
 import { DlqPublisher } from '../sink/dlq-publisher.js';
+import { PartitionProgress } from '../sink/progress.js';
 import { FaultInjector, describeCrash, describeError } from '@eventpulse/fault-injector';
 import { handleBatch } from './batch-handler.js';
 import { FAULT_INJECTOR } from './faults.controller.js';
@@ -46,6 +47,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly writer: BatchWriter;
   private readonly dlq: DlqPublisher;
   private readonly lag: LagMonitor;
+  /** S3-F3: highest stored offset per partition (sink_offsets), to split duplicates by cause. */
+  private readonly progress?: PartitionProgress;
   private readonly resumeTimers = new Set<NodeJS.Timeout>();
   private assignedOnce!: Promise<void>;
   /** K8: only some chunks get SINK_PROCESSING_DELAY_MS (shared by every eachBatch call of this member). */
@@ -66,6 +69,11 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
       faults,
       onConflictCheckError: (e) => this.log.warn(`conflict check failed (rows are stored): ${(e as Error).message}`),
     });
+    if (cfg.sink.dedup) {
+      this.progress = new PartitionProgress(pool, cfg.consumer.groupId, cfg.consumer.topic, (e) =>
+        this.log.warn(`sink_offsets lookup failed (duplicates of this chunk counted as cause=unknown): ${(e as Error).message}`),
+      );
+    }
     this.lag = new LagMonitor(cfg.kafka, cfg.consumer.groupId, cfg.consumer.topic, cfg.lagPollMs, stats);
     this.dlq = new DlqPublisher(cfg.kafka, cfg.retry.dlqTopic, { sourceTopic: cfg.consumer.topic, groupId: cfg.consumer.groupId });
     if (!cfg.retry.dlqEnabled) {
@@ -143,6 +151,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               delayWindow: this.delayWindow,
               dlq: this.dlq,
               retry: this.cfg.retry,
+              progress: this.progress,
+              log: (line) => this.log.log(line),
             },
           );
         } catch (e) {
@@ -204,6 +214,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
 
   private onRebalance(err: { code: number }, assignment: TopicPartition[]) {
     const parts = assignment.map((tp) => `${tp.topic}:${tp.partition}`);
+    // Another member may have advanced these partitions: re-read sink_offsets before classifying duplicates again.
+    this.progress?.forget(assignment.map((tp) => tp.partition));
     if (err.code === RdKafkaErrors.ERR__ASSIGN_PARTITIONS) {
       this.stats.countRebalance();
       this.stats.closeRebalanceGap();

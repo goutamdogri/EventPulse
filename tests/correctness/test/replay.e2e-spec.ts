@@ -34,7 +34,7 @@ describe('S3-F2 replay safety (real process, real log)', () => {
     try {
       await waitFor(async () => (await store.countTenant(tenant)) === N && (await fullyCommitted(group, topic)), 90_000, `${label}: all offsets committed`);
       const st = await p.stats();
-      return { consumed: st.consumed as number, inserted: st.inserted as number, duplicates: st.duplicates as number, conflicts: st.conflicting_duplicates as number };
+      return { consumed: st.consumed as number, inserted: st.inserted as number, duplicates: st.duplicates as number, conflicts: st.conflicting_duplicates as number, causes: st.duplicates_by_cause };
     } finally {
       const exit = await p.stop();
       expect(exit, p.log.join('').slice(-2000)).toEqual({ code: 0, signal: null });
@@ -66,6 +66,7 @@ describe('S3-F2 replay safety (real process, real log)', () => {
       await resetGroupOffsets(group, topic, 'earliest');
       const r = await pass(label);
       expect(r).toMatchObject({ consumed: N, inserted: 0, duplicates: N, conflicts: 0 });
+      expect(r.causes).toEqual({ reprocessed: N, redelivered: 0, unknown: 0 }); // S3-F3: the log was read again
       duplicates += r.duplicates;
       expect(await store.fingerprint(tenant)).toEqual(original);
     }
@@ -81,6 +82,7 @@ describe('S3-F2 replay safety (real process, real log)', () => {
     await resetGroupOffsets(group, topic, mid);
     const r = await pass('range pass');
     expect(r).toMatchObject({ consumed: replayed, inserted: 0, duplicates: replayed });
+    expect(r.causes).toEqual({ reprocessed: replayed, redelivered: 0, unknown: 0 });
     expect(await store.fingerprint(tenant)).toEqual(original);
     // sink_offsets never moves back: replaying lower offsets keeps the highest stored one.
     expect(await store.sinkOffsets(group, topic)).toEqual(Object.fromEntries(offsets.filter((p) => p.end > 0).map((p) => [p.partition, p.end - 1])));

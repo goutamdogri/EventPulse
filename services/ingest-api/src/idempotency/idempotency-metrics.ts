@@ -40,6 +40,10 @@ export class IdempotencyMetrics implements IdempotencyObserver {
       labelNames: ['op'],
       registers,
     });
+    // Every catalogue series exists from startup (value 0), so dashboards and the audit never miss a label.
+    const results: IdempotencyResult[] = ['new', 'replayed', 'in_progress', 'payload_mismatch', 'fail_open', 'fail_closed', 'disabled'];
+    for (const r of results) this.requests.inc({ result: r }, 0);
+    for (const reason of ['error', 'lost_ownership']) this.completeFailures.inc({ reason }, 0);
   }
 
   result(r: IdempotencyResult) {

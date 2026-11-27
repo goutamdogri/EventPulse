@@ -55,6 +55,12 @@ export interface EventKey {
   event_id: string;
 }
 
+/** A row that was NOT inserted, with where it came from (S3-F3 splits duplicates by cause from its offset). */
+export interface DuplicateRow extends EventKey {
+  partition: number;
+  offset: string;
+}
+
 export interface WriteResult {
   attempted: number;
   inserted: number;
@@ -63,8 +69,8 @@ export interface WriteResult {
   connectMs?: number;
   /** Per newly inserted row: DB commit time - received_at, seconds (duplicates excluded). */
   freshnessS?: number[];
-  /** Keys of the rows that were NOT inserted (attempted - inserted of them). */
-  duplicateKeys?: EventKey[];
+  /** The rows that were NOT inserted (attempted - inserted of them). */
+  duplicateKeys?: DuplicateRow[];
   /** Duplicates whose stored content differs from the incoming one (never overwritten). */
   conflicts?: EventKey[];
   /** The conflict check itself failed (the rows ARE committed; only the comparison is missing). */
@@ -98,15 +104,15 @@ const keyOf = (tenant: string, eventId: string) => `${tenant}\u0000${eventId.toL
  * Keys sent minus keys returned. A key repeated inside the chunk counts once per extra copy, so
  * duplicateKeys.length === attempted - inserted.
  */
-export function duplicateKeysOf(rows: EventRow[], inserted: EventKey[]): EventKey[] {
+export function duplicateKeysOf(rows: EventRow[], inserted: EventKey[]): DuplicateRow[] {
   const left = new Map<string, number>();
   for (const k of inserted) left.set(keyOf(k.tenant_id, k.event_id), (left.get(keyOf(k.tenant_id, k.event_id)) ?? 0) + 1);
-  const dups: EventKey[] = [];
+  const dups: DuplicateRow[] = [];
   for (const r of rows) {
     const k = keyOf(r.tenant_id, r.event_id);
     const n = left.get(k) ?? 0;
     if (n > 0) left.set(k, n - 1);
-    else dups.push({ tenant_id: r.tenant_id, event_id: r.event_id });
+    else dups.push({ tenant_id: r.tenant_id, event_id: r.event_id, partition: r.partition, offset: r.offset });
   }
   return dups;
 }

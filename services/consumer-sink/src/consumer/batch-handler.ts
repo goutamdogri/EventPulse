@@ -25,7 +25,9 @@
 // With SINK_DLQ_ENABLED=false the old S2-F2/F3 behavior returns: a poison record throws and blocks its partition.
 
 import type { ChunkFailure, SinkStats } from '../observability/sink-stats.js';
-import type { BatchWriter, WriteResult } from '../sink/batch-writer.js';
+import type { BatchWriter, DuplicateRow, WriteResult } from '../sink/batch-writer.js';
+import { reprocessedMessages, splitByCause } from '../sink/progress.js';
+import type { ProgressSource } from '../sink/progress.js';
 import { chunk } from '../sink/batch-writer.js';
 import type { DeadLetter, DlqSink } from '../sink/dlq-publisher.js';
 import { backoffMs, classifyDbError, errorCode, isBlocking } from '../sink/errors.js';
@@ -103,6 +105,10 @@ export interface HandlerDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   rand?: () => number;
+  /** S3-F3: highest stored offset per partition, to split duplicates into reprocessed / redelivered. */
+  progress?: ProgressSource;
+  /** One structured line per chunk that had duplicates or conflicts (never one per row). */
+  log?: (line: string) => void;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -111,14 +117,25 @@ interface WriteOutcome {
   attempted: number;
   inserted: number;
   dead: DeadLetter[];
+  dups: DuplicateRow[];
+  conflicts: number;
 }
 
 const add = (a: WriteOutcome, b: WriteOutcome): WriteOutcome => ({
   attempted: a.attempted + b.attempted,
   inserted: a.inserted + b.inserted,
   dead: [...a.dead, ...b.dead],
+  dups: [...a.dups, ...b.dups],
+  conflicts: a.conflicts + b.conflicts,
 });
-const fromWrite = (w: WriteResult): WriteOutcome => ({ attempted: w.attempted, inserted: w.inserted, dead: [] });
+const fromWrite = (w: WriteResult): WriteOutcome => ({
+  attempted: w.attempted,
+  inserted: w.inserted,
+  dead: [],
+  dups: w.duplicateKeys ?? [],
+  conflicts: w.conflicts?.length ?? 0,
+});
+const NOTHING: WriteOutcome = { attempted: 0, inserted: 0, dead: [], dups: [], conflicts: 0 };
 
 export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise<void> {
   if (ctx.messages.length === 0) return;
@@ -193,6 +210,9 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
     if (delay) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
   }
 
+  // S3-F3: what this partition had already stored BEFORE this chunk (one query per partition after an assignment).
+  const partition = part[0].partition;
+  const storedBefore = good.length > 0 && deps.progress ? await deps.progress.known(partition) : undefined;
   const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
   faults.hit('consumer:after-db-commit', { rows: part.length });
 
@@ -209,7 +229,17 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
     }
   }
   // Rows committed and dead letters acknowledged: the chunk's work is done. consumed = inserted + duplicates + dlq.
-  stats.completeChunk({ consumed: part.length, attempted: out.attempted, inserted: out.inserted, dlq: dead });
+  const causes = splitByCause(out.dups, storedBefore);
+  const reprocessed = reprocessedMessages(part.map((m) => m.offset), storedBefore);
+  stats.completeChunk({ consumed: part.length, attempted: out.attempted, inserted: out.inserted, dlq: dead, causes, reprocessed, partition });
+  if (deps.progress) {
+    const deadOffsets = new Set(out.dead.map((d) => d.raw.offset));
+    const written = good.filter((g) => !deadOffsets.has(g.row.offset));
+    if (written.length > 0) deps.progress.advance(partition, written.reduce((m, g) => (BigInt(g.row.offset) > BigInt(m) ? g.row.offset : m), written[0].row.offset));
+  }
+  if (deps.log && (out.dups.length > 0 || out.conflicts > 0)) {
+    deps.log(JSON.stringify({ msg: 'duplicates', partition, from_offset: part[0].offset, to_offset: part[part.length - 1].offset, attempted: out.attempted, inserted: out.inserted, duplicates: out.dups.length, ...causes, reprocessed_messages: reprocessed, conflicts: out.conflicts }));
+  }
 
   if (ctx.isStale()) {
     // Revoked while we were writing: the new owner reads this chunk again; ON CONFLICT absorbs it.
@@ -256,7 +286,7 @@ async function writeWithRetry(
   ctx: BatchContext,
   deps: HandlerDeps,
 ): Promise<WriteOutcome> {
-  if (good.length === 0) return { attempted: 0, inserted: 0, dead: [] };
+  if (good.length === 0) return NOTHING;
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
   const p = deps.retry;
@@ -353,5 +383,7 @@ async function retryOneRow(
         attempts: 1 + deps.retry.maxRetries,
       },
     ],
+    dups: [],
+    conflicts: 0,
   };
 }

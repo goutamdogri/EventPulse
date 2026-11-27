@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { createKafka, loadKafkaClientConfig } from '@eventpulse/kafka-config';
 import { groupLag } from './checks.ts';
-import type { ApiStats, ConsumerStats, PartitionOffsets, RunFacts, Snapshot } from './types.ts';
+import type { ApiStats, ConsumerStats, IdemCounts, PartitionOffsets, RunFacts, Snapshot } from './types.ts';
 
 export const REPO = resolve(import.meta.dirname, '../../..');
 
@@ -98,18 +98,43 @@ export async function takeSnapshot(cfg: AuditConfig): Promise<Snapshot> {
 
   const a = await getJson(cfg.apiStatsUrl);
   const api: ApiStats | null = a
-    ? { url: cfg.apiStatsUrl, uptime_s: a.uptime_s, acked: a.producer?.acked ?? 0, failed: a.producer?.failed ?? 0, http_202: a.http?.by_status?.['202'] ?? 0, by503: a.http?.['503_by_reason'] ?? {} }
+    ? {
+        url: cfg.apiStatsUrl,
+        uptime_s: a.uptime_s,
+        acked: a.producer?.acked ?? 0,
+        failed: a.producer?.failed ?? 0,
+        http_202: a.http?.by_status?.['202'] ?? 0,
+        by503: a.http?.['503_by_reason'] ?? {},
+        ...(a.idempotency?.by_result ? { idem: idemCounts(a.idempotency.by_result) } : {}),
+      }
     : null;
   if (!api) notes.push(`API stats not reachable at ${cfg.apiStatsUrl}`);
 
   const consumers: ConsumerStats[] = [];
   for (const url of cfg.consumerStatsUrls) {
     const c = await getJson(url);
-    if (c) consumers.push({ url, uptime_s: c.uptime_s, consumed: c.consumed, attempted: c.attempted, inserted: c.inserted, duplicates: c.duplicates, dlq: c.dlq });
+    if (c) {
+      const byCause = c.duplicates_by_cause;
+      consumers.push({
+        url,
+        uptime_s: c.uptime_s,
+        consumed: c.consumed,
+        attempted: c.attempted,
+        inserted: c.inserted,
+        duplicates: c.duplicates,
+        dlq: c.dlq,
+        ...(byCause ? { dup_reprocessed: byCause.reprocessed ?? 0, dup_redelivered: byCause.redelivered ?? 0, dup_unknown: byCause.unknown ?? 0, conflicts: c.conflicting_duplicates ?? 0 } : {}),
+      });
+    }
   }
   if (consumers.length === 0) notes.push('no consumer /debug/stats reachable');
 
   return { taken_at: new Date().toISOString(), topic: cfg.topic, dlq_topic: cfg.dlqTopic, group: cfg.group, ...k, db: { rows_total }, api, consumers, notes };
+}
+
+function idemCounts(b: Record<string, number>): IdemCounts {
+  const n = (k: string) => Number(b[k] ?? 0);
+  return { new: n('new'), replayed: n('replayed'), in_progress: n('in_progress'), payload_mismatch: n('payload_mismatch'), fail_open: n('fail_open'), fail_closed: n('fail_closed'), disabled: n('disabled') };
 }
 
 /** Poll the group lag until it is 0 or the timeout passes. Every wait is bounded. */

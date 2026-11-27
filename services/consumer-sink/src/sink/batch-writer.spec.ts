@@ -18,6 +18,7 @@ const row = (i: number, o: Partial<EventRow> = {}): EventRow => ({
   ...o,
 });
 const key = (r: EventRow) => ({ tenant_id: r.tenant_id, event_id: r.event_id });
+const dup = (r: EventRow) => ({ ...key(r), partition: r.partition, offset: r.offset });
 
 describe('chunk', () => {
   it('splits 2500 rows into 1000/1000/500', () =>
@@ -59,19 +60,19 @@ describe('insertSql', () => {
 describe('duplicateKeysOf', () => {
   it('keys sent minus keys returned', () => {
     const rows = [row(1), row(2), row(3)];
-    expect(duplicateKeysOf(rows, [key(rows[0]), key(rows[2])])).toEqual([key(rows[1])]);
+    expect(duplicateKeysOf(rows, [key(rows[0]), key(rows[2])])).toEqual([dup(rows[1])]);
   });
 
   it('a key repeated inside the chunk counts once per extra copy', () => {
-    const rows = [row(1), row(2), row(1)];
-    expect(duplicateKeysOf(rows, [key(rows[0]), key(rows[1])])).toEqual([key(rows[0])]);
+    const rows = [row(1), row(2), row(1, { offset: '7' })];
+    expect(duplicateKeysOf(rows, [key(rows[0]), key(rows[1])])).toEqual([dup(rows[2])]); // the later copy, with its own offset
   });
 
   it('the same event_id under two tenants is two different keys', () => {
     const a = row(1, { tenant_id: 'a' });
     const b = row(1, { tenant_id: 'b' });
     expect(duplicateKeysOf([a, b], [key(a), key(b)])).toEqual([]);
-    expect(duplicateKeysOf([a, b], [key(a)])).toEqual([key(b)]);
+    expect(duplicateKeysOf([a, b], [key(a)])).toEqual([dup(b)]);
   });
 
   it('UUID case does not matter (Postgres returns lower case)', () => {
@@ -137,7 +138,7 @@ describe('BatchWriter.writeChunk (fake pool)', () => {
     f.setSent(rows);
     const r = await new BatchWriter(f.pool, { track: { group: 'g', topic: 't' } }).writeChunk(rows);
     expect(f.queries).toEqual(['BEGIN', 'INSERT', 'SINK_OFFSETS', 'COMMIT', 'HASHES']);
-    expect(r).toMatchObject({ attempted: 3, inserted: 2, duplicateKeys: [key(rows[1])], conflicts: [] });
+    expect(r).toMatchObject({ attempted: 3, inserted: 2, duplicateKeys: [dup(rows[1])], conflicts: [] });
     expect(f.params[2]).toEqual(['g', 't', [0], ['3']]);
     expect(f.client.release).toHaveBeenCalled();
   });

@@ -68,7 +68,7 @@ describe('BatchWriter (real Postgres)', () => {
     const a = row();
     const r = await writer.writeChunk([a, row(), { ...a }]);
     expect(r.attempted - r.inserted).toBe(1);
-    expect(r.duplicateKeys).toEqual([{ tenant_id: TENANT, event_id: a.event_id }]);
+    expect(r.duplicateKeys).toEqual([{ tenant_id: TENANT, event_id: a.event_id, partition: 0, offset: '0' }]);
     expect(r.conflicts).toEqual([]);
     expect(await count([a.event_id])).toBe(1);
   });

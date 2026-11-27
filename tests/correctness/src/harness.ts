@@ -3,7 +3,9 @@
 // a fingerprint of the stored data, and per-tenant counts.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
+import { createKafka, encodeEvent, loadKafkaClientConfig } from '@eventpulse/kafka-config';
 
 export * from '../../../services/consumer-sink/test/process-helpers.js';
 
@@ -83,5 +85,34 @@ export class StoreProbe {
 
   end() {
     return this.pool.end();
+  }
+}
+
+export interface FixedEvent {
+  event_id: string;
+  type: string;
+  occurred_at: string;
+  schema_version: number;
+  payload: Record<string, unknown>;
+}
+
+/** N events with FIXED content (so producing them again is a true duplicate, not a conflicting one). */
+export const fixedEvents = (n: number, tag = 'fixed'): FixedEvent[] =>
+  Array.from({ length: n }, (_, i) => ({ event_id: randomUUID(), type: `${tag}.event`, occurred_at: '2026-11-27T10:00:00.000Z', schema_version: 1, payload: { i } }));
+
+/** Produce exactly these events (encoded like the API does), keyed by event_id; returns when Kafka acknowledged all. */
+export async function produceFixed(topic: string, tenant: string, events: FixedEvent[]): Promise<void> {
+  const producer = createKafka({ ...loadKafkaClientConfig(process.env, 'correctness-fixed'), logLevel: 'error' }).producer({ kafkaJS: { acks: -1, idempotent: true }, 'linger.ms': 0 } as any);
+  await producer.connect();
+  try {
+    for (let i = 0; i < events.length; i += 500) {
+      const messages = events.slice(i, i + 500).map((event) => {
+        const e = encodeEvent({ tenantId: tenant, event, receivedAt: new Date('2026-11-27T10:00:01.000Z'), requestId: 'fixed', keyMode: 'event' });
+        return { key: e.key, value: e.value, headers: e.headers };
+      });
+      await producer.send({ topic, messages });
+    }
+  } finally {
+    await producer.disconnect();
   }
 }

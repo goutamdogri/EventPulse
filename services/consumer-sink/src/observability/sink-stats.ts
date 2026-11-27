@@ -10,6 +10,8 @@
 //
 // Labels stay low-cardinality: partition numbers, error classes, reasons. Never ids or raw messages.
 
+import type { CauseSplit } from '../sink/progress.js';
+import { DUPLICATE_CAUSES } from '../sink/progress.js';
 import { Counter, Gauge, Histogram, Registry } from '@prometheus-io/client';
 import type { ErrorClass } from '../sink/errors.js';
 import { histQuantile, round } from './hist-quantile.js';
@@ -32,6 +34,11 @@ export interface ChunkCompletion {
   attempted: number;
   inserted: number;
   dlq: { errorClass: ErrorClass }[];
+  /** S3-F3: the duplicates (attempted - inserted) split by cause; reprocessed + redelivered + unknown = duplicates. */
+  causes?: CauseSplit;
+  /** Messages whose offset was already stored once for this partition. */
+  reprocessed?: number;
+  partition?: number;
 }
 
 export class SinkStats {
@@ -58,6 +65,10 @@ export class SinkStats {
   readonly retriesByClass: Partial<Record<ErrorClass, number>> = {};
   readonly dlqByClass: Partial<Record<ErrorClass, number>> = {};
   readonly chunkFailures: Partial<Record<ChunkFailure, number>> = {};
+  /** S3-F3: duplicates by cause, and reprocessed messages per partition. */
+  readonly duplicatesByCause: CauseSplit = { reprocessed: 0, redelivered: 0, unknown: 0 };
+  readonly reprocessedByPartition: Record<string, number> = {};
+  reprocessedMessages = 0;
   /** S3-F2: duplicates whose content differs from the stored row (same key, other content). Never overwritten. */
   conflicts = 0;
   conflictCheckErrors = 0;
@@ -73,6 +84,8 @@ export class SinkStats {
 
   constructor(registry: Registry = new Registry(), live?: () => { pgTotal: number; pgIdle: number; pgWaiting: number }) {
     this.m = createMetrics(registry, this, live);
+    // Every catalogue series exists from startup (value 0), so dashboards and the audit never miss a label.
+    for (const cause of DUPLICATE_CAUSES) this.m.duplicatesByCause.inc({ cause }, 0);
   }
 
   /** Reprocessed messages absorbed by ON CONFLICT DO NOTHING. */
@@ -88,6 +101,21 @@ export class SinkStats {
     this.m.consumed.inc(c.consumed);
     this.m.inserted.inc(c.inserted);
     this.m.duplicates.inc(c.attempted - c.inserted);
+    this.m.rowsAttempted.inc(c.attempted);
+    this.m.rowsInserted.inc(c.inserted);
+    // Chunks without a split (dedup off, unit tests) count their duplicates as "unknown": the causes always add up.
+    const causes = c.causes ?? { reprocessed: 0, redelivered: 0, unknown: c.attempted - c.inserted };
+    for (const cause of DUPLICATE_CAUSES) {
+      if (causes[cause] === 0) continue;
+      this.duplicatesByCause[cause] += causes[cause];
+      this.m.duplicatesByCause.inc({ cause }, causes[cause]);
+    }
+    if (c.reprocessed) {
+      const p = String(c.partition ?? 'unknown');
+      this.reprocessedMessages += c.reprocessed;
+      this.reprocessedByPartition[p] = (this.reprocessedByPartition[p] ?? 0) + c.reprocessed;
+      this.m.reprocessed.inc({ partition: p }, c.reprocessed);
+    }
     for (const d of c.dlq) {
       this.dlq++;
       this.dlqByClass[d.errorClass] = (this.dlqByClass[d.errorClass] ?? 0) + 1;
@@ -189,6 +217,9 @@ export class SinkStats {
       attempted: this.attempted,
       inserted: this.inserted,
       duplicates: this.duplicates,
+      duplicates_by_cause: { ...this.duplicatesByCause },
+      reprocessed_messages: this.reprocessedMessages,
+      reprocessed_by_partition: { ...this.reprocessedByPartition },
       conflicting_duplicates: this.conflicts,
       conflict_check_errors: this.conflictCheckErrors,
       last_conflict: this.lastConflict ?? null,
@@ -263,6 +294,15 @@ function createMetrics(registry: Registry, st: SinkStats, live?: () => { pgTotal
     consumed: new Counter({ name: 'ep_consumer_messages_consumed_total', help: 'Messages of completed chunks (reprocessed ones included).', registers }),
     inserted: new Counter({ name: 'ep_consumer_rows_inserted_total', help: 'Rows actually inserted (rowCount).', registers }),
     duplicates: new Counter({ name: 'ep_consumer_duplicates_total', help: 'Rows absorbed by ON CONFLICT DO NOTHING (reprocessing made visible).', registers }),
+    rowsAttempted: new Counter({ name: 'ep_sink_rows_attempted_total', help: 'Rows sent to INSERT (Stage 3 catalogue name; = inserted + duplicates).', registers }),
+    rowsInserted: new Counter({ name: 'ep_sink_rows_inserted_total', help: 'Rows actually inserted (Stage 3 catalogue name).', registers }),
+    duplicatesByCause: new Counter({
+      name: 'ep_sink_duplicates_total',
+      help: 'Duplicate rows absorbed by the (tenant_id, event_id) key, by cause: reprocessed (offset already stored: crash, rebalance, offset reset) | redelivered (new offset, existing key: client retry past the API, replay) | unknown.',
+      labelNames: ['cause'],
+      registers,
+    }),
+    reprocessed: new Counter({ name: 'ep_sink_reprocessed_messages_total', help: 'Messages whose offset was already stored once (processed again after a restart / rebalance / reset).', labelNames: ['partition'], registers }),
     conflicts: new Counter({ name: 'ep_sink_conflicting_duplicates_total', help: 'Duplicate keys whose content_hash differs from the stored row (S3-F2; never overwritten).', registers }),
     dlq: new Counter({ name: 'ep_consumer_dlq_total', help: 'Records published to the DLQ, by error class.', labelNames: ['error_class'], registers }),
     chunkFailures: new Counter({ name: 'ep_consumer_chunk_failures_total', help: 'Chunk attempts that failed and will be retried, by reason.', labelNames: ['reason'], registers }),

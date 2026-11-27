@@ -1,4 +1,4 @@
-import { consumerDeltas, evaluate, groupLag } from './checks.ts';
+import { committedSum, consumerDeltas, evaluate, groupLag } from './checks.ts';
 import { formatReport } from './format.ts';
 import type { ConsumerStats, K6Summary, RunFacts, Snapshot } from './types.ts';
 
@@ -42,7 +42,7 @@ describe('evaluate (S2-F7 reconciliation)', () => {
   it('clean run: every check OK, RECONCILED, exit 0', () => {
     const { start, end } = clean();
     const r = evaluate(start, end, k6(), facts());
-    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok']);
+    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok', 'J:skipped', 'K:skipped']); // Stage 2 fixtures: no split
     expect(r).toMatchObject({ result: 'RECONCILED', exit_code: 0, findings: [] });
     expect(r.numbers).toMatchObject({ acked_202: 1000, kafka_records_delta: 1000, rows_distinct_run: 1000, duplicates_delta: 0 });
   });
@@ -134,7 +134,7 @@ describe('evaluate (S2-F7 reconciliation)', () => {
     const r = evaluate(start, end, k6(), facts());
     expect(status(r, 'F')).toBe('ok');
     expect(status(r, 'G')).toBe('finding');
-    expect(r.findings.join()).toMatch(/150 reprocessed/);
+    expect(r.findings.join()).toMatch(/G: 150/);
     expect(r.findings.join()).toMatch(/restarted during the run/);
     expect(r.exit_code).toBe(0); // no loss: E and C still decide
   });
@@ -174,5 +174,92 @@ describe('helpers', () => {
   it('consumerDeltas: a process gone at the end is noted', () => {
     const { notes } = consumerDeltas([consumer({ url: 'a' }), consumer({ url: 'b' })], [consumer({ url: 'a', uptime_s: 2000 })], 60);
     expect(notes.join()).toMatch(/b was gone/);
+  });
+});
+
+// --- Stage 3 (S3-F3): API idempotency, duplicate causes, and the unexplained difference ----------------------------
+const idem = (o: Partial<Record<string, number>> = {}) => ({ new: 0, replayed: 0, in_progress: 0, payload_mismatch: 0, fail_open: 0, fail_closed: 0, disabled: 0, ...o });
+const c3 = (o: Partial<ConsumerStats> = {}) => consumer({ dup_reprocessed: 0, dup_redelivered: 0, dup_unknown: 0, conflicts: 0, ...o });
+
+/** 1000 distinct events, 100 of them resent with the same key. */
+function stage3(o: { resendsPassApi?: boolean } = {}) {
+  const passed = o.resendsPassApi ? 100 : 0; // resends that reached Kafka (fail_open) instead of being replayed
+  const start = snap({ api: { ...snap().api!, idem: idem() }, consumers: [c3({ consumed: 200, attempted: 200, inserted: 200 })] });
+  const end = snap({
+    taken_at: END_AT,
+    raw: parts([600 + passed / 2, 600 + passed / 2]),
+    committed: [{ partition: 0, offset: 600 + passed / 2 }, { partition: 1, offset: 600 + passed / 2 }],
+    db: { rows_total: 1200 },
+    api: {
+      url: 'api', uptime_s: 1060, acked: 1050 + passed, failed: 0, http_202: 1150, by503: {},
+      idem: o.resendsPassApi ? idem({ fail_open: 1100 }) : idem({ new: 1000, replayed: 100 }),
+    },
+    consumers: [c3({ uptime_s: 1060, consumed: 1200 + passed, attempted: 1200 + passed, inserted: 1200, duplicates: passed, dup_redelivered: passed })],
+  });
+  const summary = k6({ sent: 1100, by_status: { '202': 1100, '4xx': 0, '503': 0, other: 0 }, unique_202: 1000, replayed_202: o.resendsPassApi ? 0 : 100, resends_sent: 100 });
+  return { start, end, summary };
+}
+
+describe('evaluate: Stage 3 duplicate accounting (S3-F3)', () => {
+  it('resends stopped at the API: B counts replayed 202s, C/E use distinct events, J and K ok', () => {
+    const { start, end, summary } = stage3();
+    const r = evaluate(start, end, summary, facts());
+    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok', 'J:ok', 'K:ok']);
+    expect(r.numbers).toMatchObject({ accepted_unique: 1000, api_replayed_delta: 100, unexplained: 0, committed_delta: 1000, rows_new_total: 1000 });
+    expect(r.checks.find((c) => c.id === 'B')!.detail).toBe('1100 == 1000 acked + 100 replayed');
+  });
+
+  it('Redis down (fail_open): resends reach Kafka and the sink; every extra copy is accounted for as redelivered', () => {
+    const { start, end, summary } = stage3({ resendsPassApi: true });
+    const r = evaluate(start, end, summary, facts());
+    expect(status(r, 'D')).toBe('finding'); // 100 extra copies in the log
+    expect(status(r, 'G')).toBe('finding');
+    expect(status(r, 'J')).toBe('ok'); // 1100 committed - 1000 rows - 0 DLQ - 100 redelivered = 0
+    expect(status(r, 'K')).toBe('finding'); // REDIS DEGRADED
+    expect(r).toMatchObject({ result: 'RECONCILED', exit_code: 0 });
+    expect(r.numbers).toMatchObject({ dup_redelivered: 100, unexplained: 0, written_not_acked: 100 });
+  });
+
+  it('a committed record that is neither stored, dead-lettered nor a counted duplicate: J fails (unexplained), exit 1', () => {
+    const { start, end, summary } = stage3();
+    end.db.rows_total = 1195; // 5 records committed but vanished
+    const r = evaluate(start, end, summary, facts());
+    expect(status(r, 'J')).toBe('fail');
+    expect(r.numbers.unexplained).toBe(5);
+    expect(r.exit_code).toBe(1);
+    expect(r.findings.join()).toMatch(/UNEXPLAINED DIFFERENCE/);
+  });
+
+  it('reprocessed duplicates (consumer crash) need no new record, so J still balances', () => {
+    const { start, end, summary } = stage3();
+    end.consumers = [c3({ uptime_s: 1060, consumed: 1450, attempted: 1450, inserted: 1200, duplicates: 250, dup_reprocessed: 250 })];
+    const r = evaluate(start, end, summary, facts());
+    expect(status(r, 'J')).toBe('ok');
+    expect(r.numbers.dup_reprocessed).toBe(250);
+  });
+
+  it('a restarted consumer makes J best-effort (finding), never a false failure', () => {
+    const { start, end, summary } = stage3();
+    end.consumers = [c3({ uptime_s: 10, consumed: 300, attempted: 300, inserted: 300 })]; // restarted: earlier counts lost
+    end.db.rows_total = 1190;
+    const r = evaluate(start, end, summary, facts());
+    expect(status(r, 'J')).toBe('finding');
+    expect(r.exit_code).not.toBe(1);
+  });
+
+  it('F also checks that the causes add up to the duplicates', () => {
+    const { start, end, summary } = stage3();
+    end.consumers = [c3({ uptime_s: 1060, consumed: 1210, attempted: 1210, inserted: 1200, duplicates: 10, dup_reprocessed: 3, dup_redelivered: 3 })];
+    expect(status(evaluate(start, end, summary, facts()), 'F')).toBe('fail');
+  });
+
+  it('a Stage 2 k6 summary (no unique_202) falls back to the 202 count', () => {
+    const { start, end } = stage3();
+    const r = evaluate(start, end, k6({ sent: 1000 }), facts());
+    expect(r.numbers.accepted_unique).toBe(1000);
+  });
+
+  it('committedSum: never-committed partitions count from the log start', () => {
+    expect(committedSum(snap({ raw: parts([10, 10], [3, 0]), committed: [{ partition: 1, offset: 7 }] }))).toBe(3 + 7);
   });
 });

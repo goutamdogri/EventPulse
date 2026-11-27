@@ -24,8 +24,8 @@ down: ## Stop ingest-api and consumer-sink gracefully (containers keep running)
 	scripts/down.sh
 lag: ## Consumer group lag per partition
 	scripts/lag.sh
-audit: ## Load + reconciliation: make audit RATE=500 DURATION=30s [RUN=a1b2c3d4]
-	RATE=$(or $(RATE),200) DURATION=$(or $(DURATION),30s) $(if $(RUN),RUN_ID=$(RUN)) scripts/audit.sh run
+audit: ## Load + reconciliation: make audit RATE=500 DURATION=30s [RUN=a1b2c3d4] [RESEND=0.1]
+	RATE=$(or $(RATE),200) DURATION=$(or $(DURATION),30s) $(if $(RUN),RUN_ID=$(RUN)) $(if $(RESEND),RESEND_FRACTION=$(RESEND)) scripts/audit.sh run
 reset: ## DESTRUCTIVE clean slate: truncate events, recreate topics, delete the group (asks first)
 	scripts/reset.sh
 

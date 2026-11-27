@@ -77,6 +77,23 @@ for each chunk (SINK_MAX_ROWS messages) of a batch:
 - Proof: `tests/correctness` (log replay three times, replay from mid-partition, crash matrix at every consumer point;
   generated table in `docs/generated/crash-matrix.md`).
 
+### Stage 3 (S3-F3): duplicates are counted by cause, never silently swallowed
+
+Every duplicate the key absorbs is counted with its cause, from the record's offset:
+
+| Cause | Meaning | Typical source |
+| --- | --- | --- |
+| `reprocessed` | the offset was already stored once for this partition (`sink_offsets`) | crash between DB commit and offset commit, rebalance, offset reset |
+| `redelivered` | a new offset carrying a key that is already stored | a client retry that got past the API's idempotency (window expired, Redis lost, `fail_open`, API crash), a DLQ replay |
+| `unknown` | `sink_offsets` could not be read for that chunk | Postgres trouble; counted, never dropped |
+
+- Metrics: `ep_sink_duplicates_total{cause}`, `ep_sink_reprocessed_messages_total{partition}`, `ep_sink_rows_attempted_total`,
+  `ep_sink_rows_inserted_total`, `ep_sink_conflicting_duplicates_total` (the Stage 2 `ep_consumer_*` series stay for the
+  Stage 2 dashboards). `/debug/stats`: `duplicates_by_cause`, `reprocessed_messages`, `reprocessed_by_partition`.
+- One structured log line per chunk that had duplicates: `{"msg":"duplicates","partition":..,"duplicates":..,"reprocessed":..,"redelivered":..,"conflicts":..}`.
+- Dashboard: `infra/observability/dashboards/stage-3/correctness.json` (duplicates by layer: API replayed vs sink by cause).
+- Reconciliation of a run: `make audit` (checks G, J "unexplained difference", K). Proof: `tests/correctness/test/duplicates.e2e-spec.ts`.
+
 | Crash point | Rows in DB | Offset committed | Result after restart |
 | --- | --- | --- | --- |
 | before parse | no | no | chunk reprocessed: no loss, no duplicate rows |
