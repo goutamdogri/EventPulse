@@ -14,6 +14,10 @@ import { ProducerService } from '../kafka/producer.service.js';
 import { CONFIG } from '../config.js';
 import type { AppConfig } from '../config.js';
 import { KafkaMetrics } from './kafka-metrics.js';
+import { IDEM_BREAKER, REDIS } from '../idempotency/idempotency.module.js';
+import { IdempotencyMetrics } from '../idempotency/idempotency-metrics.js';
+import type { CircuitBreaker } from '../kafka/breaker.js';
+import type { Redis } from 'ioredis';
 
 @Injectable()
 export class MetricsService {
@@ -33,6 +37,9 @@ export class MetricsService {
     private readonly producer: ProducerService,
     private readonly health: KafkaHealthService,
     @Inject(CONFIG) private readonly cfg: AppConfig,
+    private readonly idem: IdempotencyMetrics,
+    @Inject(REDIS) private readonly redis: Redis,
+    @Inject(IDEM_BREAKER) private readonly idemBreaker: CircuitBreaker,
   ) {
     const registers = [this.registry];
     // Live values (queue gauges, breaker, connection, health) are read at scrape / snapshot time.
@@ -154,6 +161,11 @@ export class MetricsService {
       batcher: k.batcher,
       producer: k.producer,
       kafka_health: this.health.snapshot(),
+      idempotency: {
+        ...this.idem.snapshot(),
+        redis_status: this.redis.status,
+        breaker: this.idemBreaker.enabled ? this.idemBreaker.state() : 'disabled',
+      },
       config: {
         topic: this.cfg.topic,
         acks: this.cfg.producer.acks,
@@ -171,6 +183,14 @@ export class MetricsService {
         breaker_failures: this.cfg.breaker.failures,
         breaker_cooldown_ms: this.cfg.breaker.cooldownMs,
         key_mode: this.cfg.keyMode,
+        idempotency: {
+          enabled: this.cfg.idempotency.enabled,
+          redis: new URL(this.cfg.idempotency.redisUrl).host,
+          ttl_s: this.cfg.idempotency.ttlS,
+          inflight_ttl_s: this.cfg.idempotency.inflightTtlS,
+          failure_policy: this.cfg.idempotency.policy,
+          command_timeout_ms: this.cfg.idempotency.commandTimeoutMs,
+        },
         brokers: this.cfg.kafka.brokers,
       },
     };

@@ -38,7 +38,7 @@ describe('report', () => {
   it('renders one table row per result, with the generation header', () => {
     const md = renderMarkdown({ generatedAt: '2026-11-27T00:00:00Z', commit: 'abc1234', results: [result(), result({ point: 'consumer:before-parse', duplicatesProcessed: 0 })] });
     expect(md).toContain('commit `abc1234`');
-    expect(md).toContain('| `consumer:after-db-commit` | rows committed in Postgres, Kafka offset not committed | 5000 | 0 | 2000 | 1500 | 500 | 0 | 0 | 4200 | ok |');
+    expect(md).toContain('| `consumer:after-db-commit` | rows committed in Postgres, Kafka offset not committed | 5000 | 0 | 2000 | 1500 | 500 | 0 | 0 | 4200 | ok |  |');
     expect(md.split('\n').filter((l) => l.startsWith('| `'))).toHaveLength(2);
   });
 });

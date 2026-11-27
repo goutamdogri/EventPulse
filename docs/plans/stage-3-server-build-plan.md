@@ -214,7 +214,7 @@ Decision: key-based dedup on `(tenant_id, event_id)` + Kafka-committed offsets. 
 | Fallback | No header: the key is the body's `event_id` (natural key). Document that clients should send one or the other consistently. |
 | Scope | `idem:{tenant_id}:{key}`. `tenant_id` comes from the API key, never the body, so tenants cannot read or block each other's keys. |
 | Fingerprint | sha256 of the **canonical** JSON of the validated event (`event_id, type, occurred_at, schema_version, payload`), using `packages/idempotency/src/canonical.ts` from step 1: keys sorted recursively, no insignificant whitespace, numbers in shortest form, strings NFC-normalized (RFC 8785 JCS style). Two bodies that differ only by key order or whitespace get the same hash. |
-| Lifetime | `done` state: `IDEM_TTL_S` (default 86400). `inflight` state: `IDEM_INFLIGHT_TTL_S` (default 30, must be > producer delivery timeout + response time) so an abandoned key frees itself quickly (C7). |
+| Lifetime | `done` state: `IDEM_TTL_S` (default 3600, 1 h; see ADR 0004 for the sizing). `inflight` state: `IDEM_INFLIGHT_TTL_S` (default 30, must be > producer delivery timeout + response time) so an abandoned key frees itself quickly (C7). |
 | Stored value | `inflight:<hash>:<owner_token>:<started_ms>` or `done:<hash>:<event_id>` (the "original result", enough to rebuild the 202 body). |
 
 **C. The state machine (`packages/idempotency`)**

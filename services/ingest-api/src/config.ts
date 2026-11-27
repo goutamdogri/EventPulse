@@ -8,6 +8,10 @@ import {
   loadKafkaClientConfig,
 } from '@eventpulse/kafka-config';
 import type { KafkaClientConfig, KeyMode } from '@eventpulse/kafka-config';
+import { loadFaultConfig } from '@eventpulse/fault-injector';
+import type { FaultConfig } from '@eventpulse/fault-injector';
+import { IDEMPOTENCY_POLICIES } from '@eventpulse/idempotency';
+import type { IdempotencyPolicy } from '@eventpulse/idempotency';
 
 export const CONFIG = Symbol('CONFIG');
 
@@ -52,6 +56,25 @@ export interface BreakerConfig {
   cooldownMs: number;
 }
 
+/** S3-F1: API idempotency (layer 1, Redis). The sink's (tenant_id, event_id) key stays the source of truth. */
+export interface IdempotencyConfig {
+  enabled: boolean;
+  redisUrl: string;
+  /** Per Redis command; with enableOfflineQueue off, a dead Redis fails within this (or at once). */
+  commandTimeoutMs: number;
+  connectTimeoutMs: number;
+  /** Dedup window of a completed key. */
+  ttlS: number;
+  /** Lifetime of an in-progress key: frees the key of a request that died. Must exceed KAFKA_SEND_TIMEOUT_MS. */
+  inflightTtlS: number;
+  /** open: Redis down -> accept without dedup (sink still dedups). closed: Redis down -> 503. */
+  policy: IdempotencyPolicy;
+  /** Consecutive Redis failures that open the Redis breaker (then the policy applies without a call). 0 = off. */
+  breakerFailures: number;
+  breakerCooldownMs: number;
+  keyPrefix: string;
+}
+
 export interface AppConfig {
   port: number;
   apiKeys: Map<string, string>; // key -> tenant
@@ -75,6 +98,9 @@ export interface AppConfig {
   keyMode: KeyMode;
   /** events.raw unless overridden (KAFKA_TOPIC); e2e tests write to a throw-away topic, never to events.raw. */
   topic: string;
+  idempotency: IdempotencyConfig;
+  /** Debug-only crash points api:* (packages/fault-injector), need DEBUG_FAULTS=true. */
+  faults: FaultConfig;
 }
 
 // Called from a provider factory (not at import time) so tests can set env first.
@@ -122,6 +148,26 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error(`BATCH_MAX_BYTES must be <= ${MAX_BATCH_BYTES_LIMIT} (broker message.max.bytes)`);
   }
 
+  const idempotency: IdempotencyConfig = {
+    enabled: envBool(env, 'IDEM_ENABLED', true),
+    redisUrl: env.REDIS_URL || 'redis://localhost:6379',
+    commandTimeoutMs: envInt(env, 'REDIS_COMMAND_TIMEOUT_MS', 50, 1),
+    connectTimeoutMs: envInt(env, 'REDIS_CONNECT_TIMEOUT_MS', 1000, 1),
+    ttlS: envInt(env, 'IDEM_TTL_S', 3_600, 1), // 1 h: covers client retry horizons; sizing in ADR 0004
+    inflightTtlS: envInt(env, 'IDEM_INFLIGHT_TTL_S', 30, 1),
+    policy: envEnum(env, 'IDEM_FAILURE_POLICY', IDEMPOTENCY_POLICIES, 'open'),
+    breakerFailures: envInt(env, 'IDEM_BREAKER_FAILURES', 5, 0),
+    breakerCooldownMs: envInt(env, 'IDEM_BREAKER_COOLDOWN_MS', 2_000, 1),
+    keyPrefix: env.IDEM_KEY_PREFIX || 'idem',
+  };
+  if (idempotency.inflightTtlS > idempotency.ttlS) throw new Error('IDEM_INFLIGHT_TTL_S must be <= IDEM_TTL_S');
+  if (!/^[A-Za-z0-9_.-]{1,32}$/.test(idempotency.keyPrefix)) throw new Error('IDEM_KEY_PREFIX must be 1-32 of [A-Za-z0-9_.-]');
+  if (idempotency.enabled && batcher.sendTimeoutMs > 0 && idempotency.inflightTtlS * 1000 <= batcher.sendTimeoutMs) {
+    // A request may hold its inflight key for up to the send timeout; a shorter TTL would let a retry produce a
+    // second copy while the first is still waiting for its ack.
+    throw new Error('IDEM_INFLIGHT_TTL_S must be longer than KAFKA_SEND_TIMEOUT_MS');
+  }
+
   return {
     port: envInt(env, 'PORT', 8000, 0),
     apiKeys,
@@ -152,6 +198,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     keyMode: envEnum(env, 'KAFKA_KEY_MODE', KEY_MODES, 'tenant'),
     topic: env.KAFKA_TOPIC || TOPIC_EVENTS_RAW,
+    idempotency,
+    faults: loadFaultConfig(env),
   };
 }
 

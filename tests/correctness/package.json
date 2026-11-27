@@ -8,13 +8,14 @@
   "scripts": {
     "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector build",
     "test": "vitest run",
-    "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink build",
+    "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink --filter @eventpulse/ingest-api build",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "crash-matrix": "pnpm test:e2e test/crash-matrix.e2e-spec.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@eventpulse/fault-injector": "workspace:*",
+    "@eventpulse/idempotency": "workspace:*",
     "@eventpulse/kafka-config": "workspace:*",
     "dotenv": "^18.0.10",
     "pg": "^8.23.1"

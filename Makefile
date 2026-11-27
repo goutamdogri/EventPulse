@@ -30,8 +30,8 @@ reset: ## DESTRUCTIVE clean slate: truncate events, recreate topics, delete the 
 	scripts/reset.sh
 
 # --- Infrastructure ---
-.PHONY: infra-up infra-down kafka-up kafka-down toxiproxy-pg
-infra-up: ## Postgres, Prometheus, Grafana, exporters, Toxiproxy
+.PHONY: infra-up infra-down kafka-up kafka-down toxiproxy
+infra-up: ## Postgres, Redis, Prometheus, Grafana, exporters, Toxiproxy (then make toxiproxy)
 	$(COMPOSE_CORE) up -d
 infra-down: ## Stop the core containers (data volumes are kept)
 	$(COMPOSE_CORE) down
@@ -39,12 +39,16 @@ kafka-up: ## 3 KRaft brokers + topic init + exporter
 	$(COMPOSE_KAFKA) up -d
 kafka-down: ## Stop the brokers
 	$(COMPOSE_KAFKA) down
-toxiproxy-pg: ## Create the Toxiproxy "pg" proxy (localhost:15434 -> postgres) if missing; e2e outage tests need it
-	@curl -sf $(TOXI_URL)/proxies/pg >/dev/null \
-	  && echo 'toxiproxy: proxy "pg" exists' \
+define toxi_proxy
+	@curl -sf $(TOXI_URL)/proxies/$(1) >/dev/null \
+	  && echo 'toxiproxy: proxy "$(1)" exists' \
 	  || { curl -sf -X POST $(TOXI_URL)/proxies -H 'Content-Type: application/json' \
-	         -d '{"name":"pg","listen":"0.0.0.0:15434","upstream":"postgres:5432","enabled":true}' >/dev/null \
-	       && echo 'toxiproxy: proxy "pg" created'; }
+	         -d '{"name":"$(1)","listen":"0.0.0.0:$(2)","upstream":"$(3)","enabled":true}' >/dev/null \
+	       && echo 'toxiproxy: proxy "$(1)" created'; }
+endef
+toxiproxy: ## Create the Toxiproxy proxies if missing: "pg" (:15434 -> postgres), "redis" (:16379 -> redis)
+	$(call toxi_proxy,pg,15434,postgres:5432)
+	$(call toxi_proxy,redis,16379,redis:6379)
 
 # --- Database (db/migrations, run through consumer-sink, which owns the events table) ---
 .PHONY: migrate migrate-down migrate-test migrate-new
@@ -74,9 +78,9 @@ consumer-start-pinned: ## Same, pinned with taskset to CONSUMER_CPUS (default 0,
 # --- Tests ---
 .PHONY: test test-e2e correctness crash-matrix test-all
 test: ## Unit tests of every package, service, tool and the correctness suite (no infrastructure)
-	pnpm $(UNIT_PACKAGES) build --if-present >/dev/null
+	pnpm --filter "./packages/*" build >/dev/null
 	pnpm $(UNIT_PACKAGES) --workspace-concurrency=1 test
-test-e2e: toxiproxy-pg migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api
+test-e2e: toxiproxy migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api
 	$(SINK) test:e2e
 	$(API) test:e2e
 correctness: migrate-test ## Correctness suite: log replay + crash matrix (regenerates docs/generated/crash-matrix.*)

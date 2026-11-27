@@ -31,6 +31,22 @@ const EXPECT: Record<string, (r: CrashResult) => void> = {
   },
   // Both committed: nothing to redo.
   'consumer:after-offset-commit': (r) => expect(r.duplicatesProcessed).toBe(0),
+  // Key inflight, nothing produced: retries get 409 until the inflight TTL, then the event is produced ONCE.
+  'api:before-produce': (r) => {
+    expect(r.duplicatesProduced).toBe(0);
+    expect(r.duplicatesProcessed).toBe(0);
+  },
+  // Produced but the key is still inflight: after the TTL the retry produces a SECOND copy (the gap of API
+  // idempotency); the sink's key absorbs it and counts it.
+  'api:after-produce-before-complete': (r) => {
+    expect(r.duplicatesProduced).toBe(1);
+    expect(r.duplicatesProcessed).toBe(1);
+  },
+  // Key done: the retry gets the original result (replayed 202), nothing new is produced.
+  'api:after-complete-before-response': (r) => {
+    expect(r.duplicatesProduced).toBe(0);
+    expect(r.notes).toMatch(/1x replayed/);
+  },
 };
 
 describe('crash matrix', () => {
@@ -62,7 +78,7 @@ describe('crash matrix', () => {
     expect(r.crashed).toBe(true);
     expect(r.lost).toBe(0);
     expect(r.duplicatesStored).toBe(0);
-    expect(r.duplicatesProduced).toBe(0); // consumer crashes never touch the log
+    if (point.component === 'consumer') expect(r.duplicatesProduced).toBe(0); // consumer crashes never touch the log
     EXPECT[point.name]?.(r);
   });
 });

@@ -4,6 +4,7 @@ import { EventsModule } from './events/events.module.js';
 import { KafkaModule } from './kafka/kafka.module.js';
 import { MetricsCoreModule } from './observability/metrics-core.module.js';
 import { HealthModule } from './health/health.module.js';
+import { IdempotencyModule } from './idempotency/idempotency.module.js';
 import { ObservabilityModule } from './observability/observability.module.js';
 
 @Module({
@@ -11,6 +12,7 @@ import { ObservabilityModule } from './observability/observability.module.js';
     ConfigModule,
     MetricsCoreModule,
     KafkaModule,
+    IdempotencyModule,
     ObservabilityModule,
     HealthModule,
     EventsModule,

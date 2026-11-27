@@ -48,6 +48,13 @@ scrape_configs:
     static_configs:
       - targets: ["postgres-exporter:9187"]
 
+  # Stage 3: Redis (API idempotency keys) through redis_exporter (docker-compose.yml).
+  - job_name: redis
+    scrape_interval: 1s
+    scrape_timeout: 1s
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
   # K4: kafka-exporter container (leader / ISR / offsets per topic partition). Defined in docker-compose.kafka.yml.
   - job_name: kafka
     scrape_interval: 1s
