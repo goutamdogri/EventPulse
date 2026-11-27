@@ -1,7 +1,8 @@
 import { encodeEvent } from '@eventpulse/kafka-config';
 import { SinkStats } from '../observability/sink-stats.js';
 import type { EventRow, RawMessage } from '../sink/parse.js';
-import { DbUnavailableError, DlqPublishError, OffsetCommitError, PoisonBatchError, handleBatch } from './batch-handler.js';
+import { DbUnavailableError, DlqPublishError, OffsetCommitError, PoisonBatchError, RegistryUnavailableChunkError, handleBatch } from './batch-handler.js';
+import { EventSerde, RegistryClient, encodeWire } from '@eventpulse/schema';
 import type { RetryPolicy } from './batch-handler.js';
 import type { DeadLetter } from '../sink/dlq-publisher.js';
 import { FaultInjector, loadFaultConfig } from '@eventpulse/fault-injector';
@@ -489,5 +490,27 @@ describe('S3-F3 duplicates by cause', () => {
     const lines: string[] = [];
     await handleBatch(s.ctx(msgs(3)), { ...s.deps, progress: fakeProgress(undefined), log: (l) => lines.push(l) });
     expect(lines).toEqual([]);
+  });
+});
+
+describe('S3-F7 schema registry unavailable', () => {
+  it('a chunk with an Avro record whose writer schema cannot be fetched: pause, retry later, nothing written or dead-lettered', async () => {
+    const down = new RegistryClient({ url: 'http://registry', fetch: (async () => { throw new Error('ECONNREFUSED'); }) as any });
+    const serde = new EventSerde(down, { subject: 'events.raw-value', schema: '"string"' });
+    const s = setup({ maxRows: 10 });
+    const avro = { ...msg(), value: encodeWire(77, Buffer.from([2, 0x61])) };
+    await expect(handleBatch(s.ctx([msg(), avro]), { ...s.deps, schema: { serde, acceptJson: true } })).rejects.toBeInstanceOf(RegistryUnavailableChunkError);
+    expect(s.calls).toEqual(['pause:5000']); // no write, no DLQ, no resolve, no commit
+    expect(s.dead).toEqual([]);
+    expect(s.stats.registryUnavailable).toBe(1);
+    expect(s.stats.chunkFailures.registry_unavailable).toBe(1);
+  });
+
+  it('Stage 2 JSON records need no registry at all', async () => {
+    const down = new RegistryClient({ url: 'http://registry', fetch: (async () => { throw new Error('ECONNREFUSED'); }) as any });
+    const serde = new EventSerde(down, { subject: 'events.raw-value', schema: '"string"' });
+    const s = setup({ maxRows: 10 });
+    await handleBatch(s.ctx(msgs(3)), { ...s.deps, schema: { serde, acceptJson: true } });
+    expect(s.calls).toContain('kafka-commit');
   });
 });

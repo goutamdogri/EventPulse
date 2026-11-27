@@ -53,14 +53,20 @@ describe('POST /v1/events -> Kafka', () => {
     const rec = recs.find((x) => x.value.event_id === e.event_id)!;
     expect(rec).toBeDefined();
     expect(rec.key).toBe('tenant_a'); // KAFKA_KEY_MODE=tenant (default)
-    expect(rec.value).toEqual({
+    // S3-F7: Avro (wire format, registered schema id) by default, decoded here with the registry.
+    expect(rec.value).toMatchObject({
       event_id: e.event_id,
       tenant_id: 'tenant_a',
       type: e.type,
       occurred_at: e.occurred_at,
       schema_version: 1,
       payload: { a: 1 },
+      source: null,
     });
+    expect(rec.raw![0]).toBe(0); // magic byte
+    expect(rec.value.schema_id).toBeGreaterThan(0);
+    expect(rec.value.received_at).toBe(rec.headers[HEADER_RECEIVED_AT]);
+    expect(rec.headers['content-type']).toBe('application/vnd.eventpulse.event+avro');
     expect(rec.headers[HEADER_REQUEST_ID]).toBe('e2e-req-1');
     expect(rec.headers[HEADER_SCHEMA_VERSION]).toBe('1');
     expect(Number.isNaN(Date.parse(rec.headers[HEADER_RECEIVED_AT]))).toBe(false);
@@ -99,5 +105,5 @@ describe('POST /v1/events -> Kafka', () => {
   });
 
   it('readyz reports Kafka up', () =>
-    request(app.getHttpServer()).get('/readyz').expect(200, { ok: true, kafka: 'up' }));
+    request(app.getHttpServer()).get('/readyz').expect(200, { ok: true, kafka: 'up', schema: 'ready' }));
 });

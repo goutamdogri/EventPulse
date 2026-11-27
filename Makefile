@@ -46,9 +46,10 @@ define toxi_proxy
 	         -d '{"name":"$(1)","listen":"0.0.0.0:$(2)","upstream":"$(3)","enabled":true}' >/dev/null \
 	       && echo 'toxiproxy: proxy "$(1)" created'; }
 endef
-toxiproxy: ## Create the Toxiproxy proxies if missing: "pg" (:15434 -> postgres), "redis" (:16379 -> redis)
+toxiproxy: ## Create the Toxiproxy proxies if missing: "pg" (:15434), "redis" (:16379), "registry" (:18081)
 	$(call toxi_proxy,pg,15434,postgres:5432)
 	$(call toxi_proxy,redis,16379,redis:6379)
+	$(call toxi_proxy,registry,18081,host.docker.internal:8081)
 
 # --- Database (db/migrations, run through consumer-sink, which owns the events table) ---
 .PHONY: migrate migrate-down migrate-test migrate-new
@@ -61,6 +62,17 @@ migrate-test: ## Apply pending migrations to the test database (services/consume
 migrate-new: ## New migration file: make migrate-new NAME=add_something
 	@test -n "$(NAME)" || { echo "usage: make migrate-new NAME=add_something"; exit 2; }
 	$(SINK) migrate:new $(NAME)
+
+# --- Schemas (S3-F7: schemas/, tools/schema-check, Schema Registry on :8081) ---
+.PHONY: schemas schema-check schema-check-against schema-fixtures
+schemas: ## Register every schema version in order (idempotent deploy step; services never register at runtime)
+	node tools/schema-check/src/cli.ts register
+schema-check: ## Whole history of every subject under its level, on throw-away subjects (what CI runs)
+	node tools/schema-check/src/cli.ts check
+schema-check-against: ## Newest local version vs the REAL subject on the running registry
+	node tools/schema-check/src/cli.ts check --against
+schema-fixtures: ## Incompatible fixtures must be rejected, compatible ones accepted (also shows BACKWARD's verdict)
+	node tools/schema-check/src/cli.ts fixtures
 
 # --- Build and run single services ---
 .PHONY: build api-start api-start-pinned consumer-start consumer-start-pinned

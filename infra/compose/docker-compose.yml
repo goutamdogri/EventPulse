@@ -134,6 +134,8 @@ services:
   # Toxiproxy sits between a service and a dependency so tests and experiments can cut it off or slow it down.
   #   consumer-sink / ingest-api -> localhost:15434 (proxy "pg")    -> postgres:5432   (B3, S2-F3/F4 e2e tests)
   #   ingest-api                 -> localhost:16379 (proxy "redis") -> redis:6379      (Stage 3: C5, S3-F1 e2e tests)
+  #   ingest-api / consumer-sink -> localhost:18081 (proxy "registry") -> host:8081    (Stage 3: C11, S3-F7 e2e tests;
+  #                                 the registry runs in the Kafka compose project, so it is reached through the host)
   # The proxies are created through the HTTP API on :8474 by `make toxiproxy` (idempotent; recreating this
   # container loses them). Normal runs connect straight to :5434 / :6379. It shares the monitoring cores.
   toxiproxy:
@@ -144,6 +146,9 @@ services:
       - "8474:8474"       # control API (curl localhost:8474/proxies)
       - "15434:15434"     # the proxied Postgres port
       - "16379:16379"     # the proxied Redis port
+      - "18081:18081"     # the proxied Schema Registry port
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

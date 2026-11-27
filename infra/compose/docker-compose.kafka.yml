@@ -127,6 +127,39 @@ services:
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.raw
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.dlq
 
+  # Stage 3 (S3-F7): Confluent Schema Registry. Subjects, versions and ids live in the _schemas topic (RF 3, compacted),
+  # so the registry itself is stateless and can be restarted. Clients on the host use localhost:8081; through
+  # Toxiproxy (proxy "registry", `make toxiproxy`) localhost:18081. Schemas are registered by `make schemas`
+  # (tools/schema-check), never by the services at runtime.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.1.1
+    container_name: ep-schema-registry
+    hostname: schema-registry
+    cpuset: "5,11"                       # the monitoring cores
+    cpus: 1
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on:
+      kafka1: { condition: service_healthy }
+      kafka2: { condition: service_healthy }
+      kafka3: { condition: service_healthy }
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka1:19092,PLAINTEXT://kafka2:19092,PLAINTEXT://kafka3:19092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: _schemas
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 3
+      # The default for subjects without their own setting. events.raw-value sets FULL_TRANSITIVE (schemas/subjects.json).
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: full_transitive
+      SCHEMA_REGISTRY_HEAP_OPTS: -Xms256m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf localhost:8081/subjects > /dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
   # K4: Kafka metrics for Prometheus (leader and ISR per partition, brokers seen, offsets). The Kafka brokers expose no
   # Prometheus metrics themselves. It talks to all three brokers on the internal listener, so when one is killed it can
   # still ask the others. Prometheus (another compose project) scrapes it as host.docker.internal:9308.

@@ -1,6 +1,6 @@
 # EventPulse Ingest API Contract
 
-*Current as of Stage 3 (S3-F1: idempotent ingest). Each stage that changes a guarantee updates this file.*
+*Current as of Stage 3 (S3-F1: idempotent ingest, S3-F7: Avro on events.raw). Each stage that changes a guarantee updates this file.*
 
 ## `POST /v1/events`
 
@@ -24,13 +24,13 @@
 | Status | Meaning |
 | --- | --- |
 | **202** `{ "event_id": "..." }` | The event is **durably appended to the replicated log** (`events.raw`) under the configured acks policy. See below. With header `Idempotent-Replayed: true`: this key was already accepted; this is the **original** result and nothing new was written. |
-| 400 | Body failed validation, is not valid JSON, or `Idempotency-Key` is invalid. Nothing was written. |
+| 400 | Body failed validation, is not valid JSON, `Idempotency-Key` is invalid, or the event does not fit the registered schema. Nothing was written. |
 | 401 | Missing or unknown API key. Nothing was written. |
 | 409 + `Retry-After` | `reason: "idempotency_in_progress"`: a request with the same key and the same payload is still being written. Nothing new was written. Retry after `Retry-After` seconds with the same key. |
 | 413 | Body larger than `BODY_LIMIT` (rejected at the edge, Kafka never sees it), or an event larger than the batch byte cap. |
 | 422 | `reason: "idempotency_key_reused"`: this key was already used with a **different** payload. Nothing was written. This is a client bug (a key reused for another request): do not retry, fix the key. |
 | 500 | Unexpected error (a bug). The event **may or may not** have been written. |
-| 503 + `Retry-After` | Kafka unavailable, or the ingest queue is full. Body: `{ statusCode: 503, error, message, reason }` with `reason` = `kafka_unavailable`, `overloaded`, `shutting_down` or `idempotency_unavailable` (Redis down and `IDEM_FAILURE_POLICY=closed`). The event **may or may not** have been written (a timed-out or failed batch can be partly in the log). |
+| 503 + `Retry-After` | Kafka unavailable, or the ingest queue is full. Body: `{ statusCode: 503, error, message, reason }` with `reason` = `kafka_unavailable`, `overloaded`, `shutting_down`, `idempotency_unavailable` (Redis down and `IDEM_FAILURE_POLICY=closed`) or `schema_unavailable` (the API has not found its writer schema id yet: registry unreachable at startup, or the schema is not registered). The event **may or may not** have been written (a timed-out or failed batch can be partly in the log). |
 
 ### 503 in detail (S2-F5)
 
@@ -67,6 +67,15 @@ The same `(tenant, Idempotency-Key or event_id)` accepted repeatedly produces **
 - `/readyz` does not include Redis (with the default policy the API works without it).
 
 Metrics: `ep_idem_requests_total{result}` (`new`, `replayed`, `in_progress`, `payload_mismatch`, `fail_open`, `fail_closed`, `disabled`), `ep_idem_complete_failures_total`, `ep_idem_redis_latency_seconds`, `ep_idem_redis_errors_total`; `/debug/stats` section `idempotency`.
+
+## Wire format on `events.raw` (S3-F7)
+
+The HTTP body is unchanged (JSON). What the API writes to Kafka changed:
+
+- **Value:** Avro, Confluent wire format (`0x00` + 4-byte schema id + Avro binary), schema `schemas/events/vN.avsc`, subject `events.raw-value`, compatibility `FULL_TRANSITIVE`. Header `content-type: application/vnd.eventpulse.event+avro`. `SERIALIZATION=json` restores the Stage 2 JSON value (`application/vnd.eventpulse.event+json`).
+- **Precision:** `occurred_at` and `received_at` travel as epoch milliseconds; digits below the millisecond are not kept.
+- **Payload:** carried exactly as sent, as JSON text.
+- **Readiness:** `/readyz` includes `schema`: 503 until the API has found its writer schema id. After that a registry outage does not affect the API.
 
 ## What 202 means now
 

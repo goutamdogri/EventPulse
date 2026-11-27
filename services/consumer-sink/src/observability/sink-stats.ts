@@ -27,7 +27,7 @@ export interface PartitionLag {
   lag: number;
 }
 
-export type ChunkFailure = 'poison_blocked' | 'db_unavailable' | 'dlq_publish' | 'commit' | 'other';
+export type ChunkFailure = 'poison_blocked' | 'db_unavailable' | 'registry_unavailable' | 'dlq_publish' | 'commit' | 'other';
 
 export interface ChunkCompletion {
   consumed: number;
@@ -68,6 +68,10 @@ export class SinkStats {
   /** S3-F3: duplicates by cause, and reprocessed messages per partition. */
   readonly duplicatesByCause: CauseSplit = { reprocessed: 0, redelivered: 0, unknown: 0 };
   readonly reprocessedByPartition: Record<string, number> = {};
+  /** S3-F7: Avro deserialization failures by reason; writer schema ids seen (id -> last seen ms). */
+  readonly deserializeFailures: Record<string, number> = {};
+  readonly schemaIdsSeen = new Map<number, number>();
+  registryUnavailable = 0;
   reprocessedMessages = 0;
   /** S3-F2: duplicates whose content differs from the stored row (same key, other content). Never overwritten. */
   conflicts = 0;
@@ -121,6 +125,26 @@ export class SinkStats {
       this.dlqByClass[d.errorClass] = (this.dlqByClass[d.errorClass] ?? 0) + 1;
       this.m.dlq.inc({ error_class: d.errorClass });
     }
+  }
+
+  observeRegistry(op: string, ok: boolean, seconds: number) {
+    this.m.registryRequests.inc({ op, result: ok ? 'ok' : 'error' });
+    this.m.registryLatency.observe({ op }, seconds);
+  }
+
+  countDeserializeFailure(reason: string) {
+    this.deserializeFailures[reason] = (this.deserializeFailures[reason] ?? 0) + 1;
+    this.m.deserializeFailures.inc({ reason });
+  }
+
+  noteSchemaId(id: number) {
+    this.schemaIdsSeen.set(id, Date.now());
+  }
+
+  /** Writer schema ids seen in the last 10 minutes (ep_schema_ids_in_use). */
+  schemaIdsInUse(windowMs = 600_000): number[] {
+    const since = Date.now() - windowMs;
+    return [...this.schemaIdsSeen.entries()].filter(([, t]) => t >= since).map(([id]) => id).sort((a, b) => a - b);
   }
 
   countConflicts(keys: { tenant_id: string; event_id: string }[]) {
@@ -217,6 +241,11 @@ export class SinkStats {
       attempted: this.attempted,
       inserted: this.inserted,
       duplicates: this.duplicates,
+      schema: {
+        ids_in_use: this.schemaIdsInUse(),
+        deserialize_failures: { ...this.deserializeFailures },
+        registry_unavailable: this.registryUnavailable,
+      },
       duplicates_by_cause: { ...this.duplicatesByCause },
       reprocessed_messages: this.reprocessedMessages,
       reprocessed_by_partition: { ...this.reprocessedByPartition },
@@ -301,6 +330,22 @@ function createMetrics(registry: Registry, st: SinkStats, live?: () => { pgTotal
       help: 'Duplicate rows absorbed by the (tenant_id, event_id) key, by cause: reprocessed (offset already stored: crash, rebalance, offset reset) | redelivered (new offset, existing key: client retry past the API, replay) | unknown.',
       labelNames: ['cause'],
       registers,
+    }),
+    registryRequests: new Counter({ name: 'ep_schema_registry_requests_total', help: 'Schema Registry requests by operation and result.', labelNames: ['op', 'result'], registers }),
+    registryLatency: new Histogram({ name: 'ep_schema_registry_latency_seconds', help: 'Schema Registry request latency.', labelNames: ['op'], buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5], registers }),
+    deserializeFailures: new Counter({
+      name: 'ep_schema_deserialize_failures_total',
+      help: 'Records whose value could not be deserialized, by reason: not_avro | unknown_schema_id | incompatible_schema | avro_decode | json_not_accepted.',
+      labelNames: ['reason'],
+      registers,
+    }),
+    schemaIdsInUse: new Gauge({
+      name: 'ep_schema_ids_in_use',
+      help: 'Distinct writer schema ids seen in the last 10 minutes.',
+      registers,
+      collect() {
+        this.set(st.schemaIdsInUse().length);
+      },
     }),
     reprocessed: new Counter({ name: 'ep_sink_reprocessed_messages_total', help: 'Messages whose offset was already stored once (processed again after a restart / rebalance / reset).', labelNames: ['partition'], registers }),
     conflicts: new Counter({ name: 'ep_sink_conflicting_duplicates_total', help: 'Duplicate keys whose content_hash differs from the stored row (S3-F2; never overwritten).', registers }),

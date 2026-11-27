@@ -6,7 +6,7 @@
   "license": "UNLICENSED",
   "type": "module",
   "scripts": {
-    "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector build",
+    "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector --filter @eventpulse/schema build",
     "test": "vitest run",
     "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink --filter @eventpulse/ingest-api build",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
@@ -17,6 +17,7 @@
     "@eventpulse/fault-injector": "workspace:*",
     "@eventpulse/idempotency": "workspace:*",
     "@eventpulse/kafka-config": "workspace:*",
+    "@eventpulse/schema": "workspace:*",
     "dotenv": "^18.0.10",
     "pg": "^8.23.1"
   },

@@ -20,6 +20,7 @@ import { SinkStats } from '../observability/sink-stats.js';
 import { BatchWriter } from '../sink/batch-writer.js';
 import { DlqPublisher } from '../sink/dlq-publisher.js';
 import { PartitionProgress } from '../sink/progress.js';
+import { EventSerde, RegistryClient, latestSchema } from '@eventpulse/schema';
 import { FaultInjector, describeCrash, describeError } from '@eventpulse/fault-injector';
 import { handleBatch } from './batch-handler.js';
 import { FAULT_INJECTOR } from './faults.controller.js';
@@ -49,6 +50,9 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly lag: LagMonitor;
   /** S3-F3: highest stored offset per partition (sink_offsets), to split duplicates by cause. */
   private readonly progress?: PartitionProgress;
+  /** S3-F7: reader schema = the newest version in schemas/subjects.json; writer schemas fetched by id. */
+  private readonly serde: EventSerde;
+  readonly readerFile: string;
   private readonly resumeTimers = new Set<NodeJS.Timeout>();
   private assignedOnce!: Promise<void>;
   /** K8: only some chunks get SINK_PROCESSING_DELAY_MS (shared by every eachBatch call of this member). */
@@ -74,6 +78,13 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
         this.log.warn(`sink_offsets lookup failed (duplicates of this chunk counted as cause=unknown): ${(e as Error).message}`),
       );
     }
+    const reader = latestSchema(cfg.schema.subject);
+    this.readerFile = reader.file;
+    this.serde = new EventSerde(
+      new RegistryClient({ url: cfg.schema.registryUrl, timeoutMs: cfg.schema.registryTimeoutMs, observer: { request: (op, ok, s) => stats.observeRegistry(op, ok, s) } }),
+      { subject: cfg.schema.subject, schema: reader.parsed },
+    );
+    if (!cfg.schema.acceptJson) this.log.warn('SINK_ACCEPT_JSON=false: Stage 2 JSON values are dead-lettered (json_not_accepted)');
     this.lag = new LagMonitor(cfg.kafka, cfg.consumer.groupId, cfg.consumer.topic, cfg.lagPollMs, stats);
     this.dlq = new DlqPublisher(cfg.kafka, cfg.retry.dlqTopic, { sourceTopic: cfg.consumer.topic, groupId: cfg.consumer.groupId });
     if (!cfg.retry.dlqEnabled) {
@@ -152,6 +163,7 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               dlq: this.dlq,
               retry: this.cfg.retry,
               progress: this.progress,
+              schema: { serde: this.serde, acceptJson: this.cfg.schema.acceptJson },
               log: (line) => this.log.log(line),
             },
           );

@@ -44,6 +44,7 @@ export class ObservabilityController {
         consumer: this.cfg.consumer,
         sink: this.cfg.sink,
         retry: this.cfg.retry,
+        schema: this.cfg.schema,
         lag_poll_ms: this.cfg.lagPollMs,
         brokers: this.cfg.kafka.brokers,
       },

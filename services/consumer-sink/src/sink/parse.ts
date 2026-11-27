@@ -1,5 +1,12 @@
 // Decodes one Kafka record of events.raw into a row for the events table.
 //
+// S3-F7: two value formats.
+//   Avro (Confluent wire format: first byte 0x00 + 4-byte schema id)  decoded with the writer schema from the registry,
+//        resolved to this sink's reader schema (packages/schema). The writer schemas must be prefetched (the batch
+//        handler does it per chunk, so a dead registry pauses the partition instead of failing records).
+//   JSON (Stage 2, first byte "{")  still accepted (SINK_ACCEPT_JSON, default true) so replaying old data works.
+// Both go through the same validation below.
+//
 // Returns a result per message instead of throwing, so one bad record never stops the others from being
 // parsed. In S2-F2 the batch handler still fails the whole batch on any bad record (that is the
 // "poison message blocks a partition" behavior S2-F4 first observes, then fixes with a DLQ).
@@ -7,6 +14,8 @@
 // Rules match the API's CreateEventDto, plus what the API adds (tenant_id, received_at header).
 
 import { HEADER_RECEIVED_AT } from '@eventpulse/kafka-config';
+import { AvroDecodeError, IncompatibleWriterError, NotAvroError, UnknownSchemaIdError, looksLikeWire } from '@eventpulse/schema';
+import type { EventSerde } from '@eventpulse/schema';
 import { eventContentHash } from '@eventpulse/idempotency';
 
 export interface RawMessage {
@@ -28,6 +37,8 @@ export interface EventRow {
   received_at: string;
   /** sha256 of the canonical event (S3-F2): tells a true duplicate from a reused id with other content. */
   content_hash: Buffer;
+  /** S3-F7: registry id of the writer schema (Avro values only). Not stored; for metrics and logs. */
+  schema_id?: number;
   partition: number;
   offset: string;
 }
@@ -42,7 +53,30 @@ export type ParseErrorCode =
   | 'bad_occurred_at'
   | 'bad_schema_version'
   | 'bad_payload'
-  | 'bad_received_at';
+  | 'bad_received_at'
+  | 'not_avro'
+  | 'unknown_schema_id'
+  | 'incompatible_schema'
+  | 'avro_decode'
+  | 'json_not_accepted';
+
+/** Codes that come from Avro deserialization (ep_schema_deserialize_failures_total{reason}). */
+export const DESERIALIZE_CODES: readonly ParseErrorCode[] = ['not_avro', 'unknown_schema_id', 'incompatible_schema', 'avro_decode', 'json_not_accepted'];
+
+export interface ParseOptions {
+  /** Decodes Avro values (writer schemas prefetched). Without it, an Avro value is a not_avro parse error. */
+  serde?: Pick<EventSerde, 'decode'>;
+  /** Stage 2 JSON values (default true). */
+  acceptJson?: boolean;
+}
+
+function avroErrorCode(e: unknown): ParseErrorCode {
+  if (e instanceof UnknownSchemaIdError) return 'unknown_schema_id';
+  if (e instanceof IncompatibleWriterError) return 'incompatible_schema';
+  if (e instanceof NotAvroError) return 'not_avro';
+  if (e instanceof AvroDecodeError) return 'avro_decode';
+  throw e; // SerdeNotReadyError (not prefetched) or a bug: never turn it into a dead letter
+}
 
 export interface ParseError {
   code: ParseErrorCode;
@@ -68,7 +102,7 @@ function headerString(headers: Record<string, unknown> | undefined, name: string
   return Buffer.isBuffer(one) ? one.toString('utf8') : String(one);
 }
 
-export function parseMessage(m: RawMessage): ParseResult {
+export function parseMessage(m: RawMessage, opts: ParseOptions = {}): ParseResult {
   const fail = (code: ParseErrorCode, message: string): ParseResult => ({
     ok: false,
     error: { code, message, partition: m.partition, offset: m.offset },
@@ -77,10 +111,22 @@ export function parseMessage(m: RawMessage): ParseResult {
   if (!m.value || m.value.length === 0) return fail('empty_value', 'record has no value');
 
   let v: any;
-  try {
-    v = JSON.parse(m.value.toString('utf8'));
-  } catch (e) {
-    return fail('invalid_json', (e as Error).message);
+  let receivedAtFromValue: string | undefined;
+  if (looksLikeWire(m.value)) {
+    if (!opts.serde) return fail('not_avro', 'Avro value but this sink has no schema registry configured');
+    try {
+      v = opts.serde.decode(m.value);
+      receivedAtFromValue = v.received_at;
+    } catch (e) {
+      return fail(avroErrorCode(e), (e as Error).message);
+    }
+  } else {
+    if (opts.acceptJson === false) return fail('json_not_accepted', 'Stage 2 JSON value and SINK_ACCEPT_JSON=false');
+    try {
+      v = JSON.parse(m.value.toString('utf8'));
+    } catch (e) {
+      return fail('invalid_json', (e as Error).message);
+    }
   }
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return fail('not_an_object', 'value is not a JSON object');
 
@@ -99,7 +145,8 @@ export function parseMessage(m: RawMessage): ParseResult {
     return fail('bad_payload', 'payload must be a JSON object');
   }
 
-  const receivedAt = headerString(m.headers, HEADER_RECEIVED_AT);
+  // Avro carries received_at in the value; Stage 2 JSON only in the header.
+  const receivedAt = receivedAtFromValue ?? headerString(m.headers, HEADER_RECEIVED_AT);
   if (!isIso(receivedAt)) return fail('bad_received_at', `header ${HEADER_RECEIVED_AT} missing or not ISO 8601`);
 
   let contentHash: Buffer;
@@ -120,6 +167,7 @@ export function parseMessage(m: RawMessage): ParseResult {
       payload: JSON.stringify(v.payload),
       received_at: receivedAt,
       content_hash: contentHash,
+      ...(typeof v.schema_id === 'number' ? { schema_id: v.schema_id } : {}),
       partition: m.partition,
       offset: m.offset,
     },

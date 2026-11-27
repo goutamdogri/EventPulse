@@ -9,6 +9,7 @@ import { BatcherService } from '../kafka/batcher.service.js';
 import { FAULT_INJECTOR, IDEMPOTENCY } from '../idempotency/idempotency.module.js';
 import { IdempotencyInProgressError, IdempotencyKeyReusedError } from '../idempotency/errors.js';
 import { CreateEventDto } from './create-event.dto.js';
+import { SchemaService } from '../schema/schema.service.js';
 
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -25,6 +26,7 @@ export class EventsService {
     @Inject(CONFIG) private readonly cfg: AppConfig,
     @Inject(IDEMPOTENCY) private readonly idem: Idempotency,
     @Inject(FAULT_INJECTOR) private readonly faults: FaultInjector,
+    private readonly schema: SchemaService,
   ) {}
 
   /**
@@ -87,6 +89,9 @@ export class EventsService {
       // Use the caller's id for tracing only if it is safe to put in a header; otherwise make one.
       requestId: requestId && REQUEST_ID_RE.test(requestId) ? requestId : randomUUID(),
       keyMode: this.cfg.keyMode,
+      // S3-F7: Avro (wire format, registered schema id) unless SERIALIZATION=json. Throws SchemaUnavailableError
+      // (503) before the writer id is known, AvroEncodeError (400) for a value that does not fit the schema.
+      ...(this.schema.avro ? { serialize: (env, at) => this.schema.serialize(env, at) } : {}),
     });
     await this.batcher.enqueue({
       message: { key: encoded.key, value: encoded.value, headers: encoded.headers },

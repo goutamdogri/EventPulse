@@ -32,7 +32,9 @@ import { chunk } from '../sink/batch-writer.js';
 import type { DeadLetter, DlqSink } from '../sink/dlq-publisher.js';
 import { backoffMs, classifyDbError, errorCode, isBlocking } from '../sink/errors.js';
 import type { ErrorClass } from '../sink/errors.js';
-import { parseMessage } from '../sink/parse.js';
+import { DESERIALIZE_CODES, parseMessage } from '../sink/parse.js';
+import { RegistryUnavailableError } from '@eventpulse/schema';
+import type { EventSerde } from '@eventpulse/schema';
 import type { EventRow, ParseError, RawMessage } from '../sink/parse.js';
 import type { FaultInjector } from '@eventpulse/fault-injector';
 
@@ -57,6 +59,14 @@ export class DbUnavailableError extends Error {
   readonly name = 'DbUnavailableError';
   constructor(readonly errorClass: ErrorClass, readonly cause: unknown, pausedMs: number) {
     super(`${errorClass} while writing (partition paused for ${pausedMs} ms, chunk will be retried): ${String((cause as Error)?.message ?? cause)}`);
+  }
+}
+
+/** S3-F7: the schema registry could not be asked for a writer schema: pause and retry, NEVER dead-letter. */
+export class RegistryUnavailableChunkError extends Error {
+  readonly name = 'RegistryUnavailableChunkError';
+  constructor(readonly cause: unknown, pausedMs: number) {
+    super(`schema registry unavailable (partition paused for ${pausedMs} ms, chunk will be retried): ${String((cause as Error)?.message ?? cause)}`);
   }
 }
 
@@ -109,6 +119,8 @@ export interface HandlerDeps {
   progress?: ProgressSource;
   /** One structured line per chunk that had duplicates or conflicts (never one per row). */
   log?: (line: string) => void;
+  /** S3-F7: Avro decoding (writer schemas fetched per chunk) and whether Stage 2 JSON values are still accepted. */
+  schema?: { serde: EventSerde; acceptJson: boolean };
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -177,6 +189,7 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
 function failureReason(e: unknown, dlqEnabled: boolean): ChunkFailure {
   if (e instanceof PoisonBatchError) return 'poison_blocked';
   if (e instanceof DbUnavailableError) return 'db_unavailable';
+  if (e instanceof RegistryUnavailableChunkError) return 'registry_unavailable';
   if (e instanceof DlqPublishError) return 'dlq_publish';
   if (e instanceof OffsetCommitError) return 'commit';
   return dlqEnabled ? 'other' : 'poison_blocked'; // DLQ off: a row Postgres rejects blocks the partition
@@ -188,10 +201,28 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
   faults.hit('consumer:before-parse', { rows: part.length });
   const good: { raw: RawMessage; row: EventRow }[] = [];
   const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
+  if (deps.schema) {
+    // Fetch the writer schema of every Avro record of the chunk that this process has not seen yet (once per id).
+    try {
+      await deps.schema.serde.prefetch(part.map((m) => m.value));
+    } catch (e) {
+      if (!(e instanceof RegistryUnavailableError)) throw e;
+      stats.registryUnavailable++;
+      ctx.pausePartition(deps.retry.pauseMs);
+      stats.pauses++;
+      throw new RegistryUnavailableChunkError(e, deps.retry.pauseMs);
+    }
+  }
+  const parseOpts = { serde: deps.schema?.serde, acceptJson: deps.schema?.acceptJson ?? true };
   for (const m of part) {
-    const r = parseMessage(m);
-    if (r.ok) good.push({ raw: m, row: r.row });
-    else parseErrors.push({ raw: m, error: r.error });
+    const r = parseMessage(m, parseOpts);
+    if (r.ok) {
+      good.push({ raw: m, row: r.row });
+      if (r.row.schema_id !== undefined) stats.noteSchemaId(r.row.schema_id);
+    } else {
+      parseErrors.push({ raw: m, error: r.error });
+      if (DESERIALIZE_CODES.includes(r.error.code)) stats.countDeserializeFailure(r.error.code);
+    }
   }
   if (parseErrors.length > 0) {
     stats.countError('PERMANENT_PARSE', parseErrors.length);

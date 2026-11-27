@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-11-27T18:19:42.872Z",
-  "commit": "e9417d73+dirty",
+  "generatedAt": "2026-11-27T19:21:05.964Z",
+  "commit": "e9b2d389+dirty",
   "results": [
     {
       "point": "consumer:before-parse",
@@ -8,12 +8,12 @@
       "description": "chunk fetched, nothing parsed or written",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 818,
-      "committedAtCrash": 818,
+      "storedAtCrash": 851,
+      "committedAtCrash": 851,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11069,
+      "recoveryMs": 11080,
       "crashed": true
     },
     {
@@ -22,12 +22,12 @@
       "description": "chunk parsed, nothing written",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 822,
-      "committedAtCrash": 1,
+      "storedAtCrash": 820,
+      "committedAtCrash": 820,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11321,
+      "recoveryMs": 11067,
       "crashed": true
     },
     {
@@ -36,12 +36,12 @@
       "description": "transaction open (BEGIN sent), INSERT not sent",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 796,
-      "committedAtCrash": 796,
+      "storedAtCrash": 843,
+      "committedAtCrash": 843,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11074,
+      "recoveryMs": 11312,
       "crashed": true
     },
     {
@@ -50,12 +50,12 @@
       "description": "INSERT done inside the open transaction, COMMIT not sent",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 832,
-      "committedAtCrash": 832,
+      "storedAtCrash": 871,
+      "committedAtCrash": 871,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11064,
+      "recoveryMs": 11066,
       "crashed": true
     },
     {
@@ -65,11 +65,11 @@
       "sent": 5000,
       "duplicatesProduced": 0,
       "storedAtCrash": 1002,
-      "committedAtCrash": 858,
-      "duplicatesProcessed": 144,
+      "committedAtCrash": 825,
+      "duplicatesProcessed": 177,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11068,
+      "recoveryMs": 11071,
       "crashed": true
     },
     {
@@ -83,7 +83,7 @@
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 10314,
+      "recoveryMs": 11327,
       "crashed": true
     },
     {
@@ -97,7 +97,7 @@
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 613,
+      "recoveryMs": 610,
       "crashed": true,
       "notes": "client: 1 network error, 5x 409, 0x replayed 202"
     },
@@ -112,7 +112,7 @@
       "duplicatesProcessed": 1,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 611,
+      "recoveryMs": 609,
       "crashed": true,
       "notes": "client: 1 network error, 5x 409, 0x replayed 202"
     },

@@ -68,6 +68,14 @@ export interface AppConfig {
     pauseMs: number;
   };
   faults: FaultConfig;
+  /** S3-F7: Avro decoding. */
+  schema: {
+    registryUrl: string;
+    registryTimeoutMs: number;
+    subject: string;
+    /** Stage 2 JSON values are still accepted (default true: replaying old data must keep working). */
+    acceptJson: boolean;
+  };
 }
 
 // Called from a provider factory (not at import time) so tests can set env first.
@@ -141,6 +149,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     faults,
     retry,
+    schema: {
+      registryUrl: env.SCHEMA_REGISTRY_URL || 'http://localhost:8081',
+      registryTimeoutMs: envInt(env, 'SCHEMA_REGISTRY_TIMEOUT_MS', 2_000, 1),
+      subject: env.SCHEMA_SUBJECT || 'events.raw-value',
+      acceptJson: envBool(env, 'SINK_ACCEPT_JSON', true),
+    },
     lagPollMs: envInt(env, 'LAG_POLL_MS', 2_000, 0),
   };
 }

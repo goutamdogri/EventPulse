@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { CanonicalJsonError, IdempotencyUnavailableError, InvalidIdempotencyKeyError } from '@eventpulse/idempotency';
+import { AvroEncodeError } from '@eventpulse/schema';
 import { IdempotencyInProgressError, IdempotencyKeyReusedError } from '../idempotency/errors.js';
+import { SchemaUnavailableError } from '../schema/schema.service.js';
 import { KafkaUnavailableError, OverloadedError } from '../kafka/errors.js';
 import { BatcherClosedError, MessageTooLargeError } from '../kafka/micro-batcher.js';
 import { MetricsService } from '../observability/metrics.service.js';
@@ -43,7 +45,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (err instanceof IdempotencyKeyReusedError) {
       return res.status(422).json({ statusCode: 422, error: 'Unprocessable Entity', message: err.message, reason: 'idempotency_key_reused' });
     }
-    if (err instanceof InvalidIdempotencyKeyError || err instanceof CanonicalJsonError) {
+    if (err instanceof InvalidIdempotencyKeyError || err instanceof CanonicalJsonError || err instanceof AvroEncodeError) {
       return res.status(400).json({ statusCode: 400, error: 'Bad Request', message: err.message });
     }
     // Event larger than the batch byte cap (only reachable if BODY_LIMIT is raised above it): the client's
@@ -58,7 +60,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       err instanceof OverloadedError ||
       err instanceof KafkaUnavailableError ||
       err instanceof BatcherClosedError ||
-      err instanceof IdempotencyUnavailableError
+      err instanceof IdempotencyUnavailableError ||
+      err instanceof SchemaUnavailableError
     ) {
       const reason =
         err instanceof OverloadedError
@@ -67,7 +70,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
             ? 'shutting_down'
             : err instanceof IdempotencyUnavailableError
               ? 'idempotency_unavailable'
-              : 'kafka_unavailable';
+              : err instanceof SchemaUnavailableError
+                ? 'schema_unavailable'
+                : 'kafka_unavailable';
       this.m.count503(reason);
       return res
         .status(503)

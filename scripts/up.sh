@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One command for the whole pipeline (make up):
-#   Postgres + observability containers, the 3 Kafka brokers + topics, migrations, build, consumer-sink, ingest-api.
+#   Postgres + Redis + observability containers, the 3 Kafka brokers + topics + Schema Registry, migrations, schema
+#   registration (make schemas), build, consumer-sink, ingest-api.
 # The two Node processes run in the background; pids and logs go to .run/. Stop them with make down (scripts/down.sh).
 # Uses each service's .env (services/ingest-api/.env, services/consumer-sink/.env).
 set -euo pipefail
@@ -20,8 +21,11 @@ for i in $(seq 1 120); do
 done
 docker wait ep-kafka-init >/dev/null   # topic creation (idempotent) finished
 for i in $(seq 1 60); do docker exec ep-postgres pg_isready -q 2>/dev/null && break; sleep 1; done
-echo "[3/6] migrations"
+echo "[3/6] migrations + schemas"
 pnpm --filter @eventpulse/consumer-sink migrate:up >/dev/null
+for i in $(seq 1 120); do curl -sf localhost:8081/subjects >/dev/null && break; [ "$i" = 120 ] && { echo "schema registry not up after 120 s"; exit 1; }; sleep 1; done
+pnpm --filter @eventpulse/schema build >/dev/null
+node tools/schema-check/src/cli.ts register >/dev/null   # idempotent: the API only looks its schema id up
 echo "[4/6] build"
 pnpm --filter @eventpulse/ingest-api build >/dev/null
 pnpm --filter @eventpulse/consumer-sink build >/dev/null

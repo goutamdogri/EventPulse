@@ -1,0 +1,12 @@
+{
+  "$comment": "Subject -> its schema history (registered IN THIS ORDER) and compatibility level. tools/schema-check registers every version in order under the level, so the whole history is checked, not only the last pair. FULL_TRANSITIVE: producers (API) and consumers (sink, later processors) deploy independently and replays read old data with new code, so only fields WITH defaults may be added or removed.",
+  "subjects": {
+    "events.raw-value": {
+      "files": [
+        "events/v1.avsc",
+        "events/v2.avsc"
+      ],
+      "compatibility": "FULL_TRANSITIVE"
+    }
+  }
+}

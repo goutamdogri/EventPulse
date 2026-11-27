@@ -3,7 +3,11 @@ import { HEADER_REQUEST_ID } from '@eventpulse/kafka-config';
 import { FaultInjector, loadFaultConfig } from '@eventpulse/fault-injector';
 import { Idempotency, IdempotencyUnavailableError, InvalidIdempotencyKeyError, MemoryStore } from '@eventpulse/idempotency';
 import type { IdempotencyOptions, IdempotencyStore } from '@eventpulse/idempotency';
+import { Registry } from '@prometheus-io/client';
+import { HEADER_CONTENT_TYPE } from '@eventpulse/kafka-config';
+import { decodeWire } from '@eventpulse/schema';
 import { loadConfig } from '../config.js';
+import { SchemaService, SchemaUnavailableError } from '../schema/schema.service.js';
 import { IdempotencyInProgressError, IdempotencyKeyReusedError } from '../idempotency/errors.js';
 import { EventsController } from './events.controller.js';
 import { EventsService } from './events.service.js';
@@ -18,7 +22,7 @@ const dto = {
 
 const tick = () => new Promise((r) => setImmediate(r));
 
-function setup(o: { store?: IdempotencyStore; idem?: Partial<IdempotencyOptions>; faults?: string; autoAck?: boolean; kill?: () => void } = {}) {
+function setup(o: { store?: IdempotencyStore; idem?: Partial<IdempotencyOptions>; faults?: string; autoAck?: boolean; kill?: () => void; serialization?: 'json' | 'avro'; avroReady?: boolean } = {}) {
   let release!: () => void;
   let fail!: (e: unknown) => void;
   const enqueue = vi.fn(() =>
@@ -33,7 +37,10 @@ function setup(o: { store?: IdempotencyStore; idem?: Partial<IdempotencyOptions>
   const idem = new Idempotency(store, { enabled: true, ttlS: 3600, inflightTtlS: 30, policy: 'open', ...o.idem });
   const kills: string[] = [];
   const faults = new FaultInjector(loadFaultConfig({ DEBUG_FAULTS: 'true', FAULTS: o.faults }), o.kill ?? (() => void kills.push('SIGKILL')), () => undefined);
-  const svc = new EventsService({ enqueue } as any, loadConfig({ API_KEYS: 'k:t' }), idem, faults);
+  const cfg = loadConfig({ API_KEYS: 'k:t', SERIALIZATION: o.serialization ?? 'json' });
+  const schema = new SchemaService(cfg, new Registry());
+  if (o.avroReady) schema.serde!.useWriterId(24);
+  const svc = new EventsService({ enqueue } as any, cfg, idem, faults, schema);
   const ctrl = new EventsController(svc);
   const headers: Record<string, string> = {};
   const res = { setHeader: (k: string, v: string) => void (headers[k] = v) } as any;
@@ -177,5 +184,23 @@ describe('S3-F1 idempotent ingest', () => {
       expect(s.enqueue, point).toHaveBeenCalledTimes(produced);
       expect(store.peek('idem:tenant_a:k1')?.split(':')[0], point).toBe(state);
     }
+  });
+});
+
+describe('S3-F7 Avro value', () => {
+  it('SERIALIZATION=avro: the value is the Confluent wire format with the writer schema id, content-type avro', async () => {
+    const s = setup({ serialization: 'avro', avroReady: true, autoAck: true });
+    await s.call();
+    const arg = (s.enqueue.mock.calls[0] as any)[0];
+    expect(decodeWire(arg.message.value).schemaId).toBe(24);
+    expect(arg.message.headers[HEADER_CONTENT_TYPE]).toBe('application/vnd.eventpulse.event+avro');
+    expect(arg.message.key).toBe('tenant_a');
+  });
+
+  it('before the writer schema id is known: SchemaUnavailableError (503), and the idempotency key is released', async () => {
+    const s = setup({ serialization: 'avro', avroReady: false, autoAck: true });
+    await expect(s.call(dto, 'k1')).rejects.toBeInstanceOf(SchemaUnavailableError);
+    expect(s.enqueue).not.toHaveBeenCalled();
+    expect(s.store instanceof MemoryStore && s.store.peek('idem:tenant_a:k1')).toBeFalsy();
   });
 });

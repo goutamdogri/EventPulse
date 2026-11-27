@@ -7,6 +7,7 @@ import {
 import { BatcherService } from '../kafka/batcher.service.js';
 import { KafkaHealthService } from '../kafka/kafka-health.service.js';
 import { ProducerService } from '../kafka/producer.service.js';
+import { SchemaService } from '../schema/schema.service.js';
 
 @Controller()
 export class HealthController {
@@ -14,6 +15,7 @@ export class HealthController {
     private readonly producer: ProducerService,
     private readonly batcher: BatcherService,
     private readonly health: KafkaHealthService,
+    private readonly schema: SchemaService,
   ) {}
 
   @Get('healthz') // liveness: shallow, never touches dependencies
@@ -30,10 +32,14 @@ export class HealthController {
     const breaker = this.batcher.breaker.state();
     const connected = this.producer.isConnected();
     const healthy = this.health.healthy();
-    if (connected && healthy && breaker === 'closed') return { ok: true, kafka: 'up' };
+    // S3-F7: with SERIALIZATION=avro, not ready until the writer schema id is known (never take traffic we can't
+    // serialize). After that a registry outage does not matter to the producer, so it is not part of readiness.
+    const schema = this.schema.ready ? 'ready' : 'unavailable';
+    if (connected && healthy && breaker === 'closed' && this.schema.ready) return { ok: true, kafka: 'up', schema };
     throw new ServiceUnavailableException({
       ok: false,
-      kafka: 'down',
+      kafka: connected && healthy && breaker === 'closed' ? 'up' : 'down',
+      schema,
       breaker,
       connected,
       health: this.health.snapshot().last?.reason ?? 'no check yet',

@@ -56,6 +56,20 @@ export interface BreakerConfig {
   cooldownMs: number;
 }
 
+export const SERIALIZATIONS = ['json', 'avro'] as const;
+export type Serialization = (typeof SERIALIZATIONS)[number];
+
+/** S3-F7: the value format on events.raw. */
+export interface SchemaConfig {
+  /** avro (default): registered Avro schema, Confluent wire format. json: the Stage 2 format (C14, transition). */
+  serialization: Serialization;
+  registryUrl: string;
+  registryTimeoutMs: number;
+  subject: string;
+  /** Startup lookup of the writer schema id: retried with backoff up to this delay between attempts. */
+  initRetryMaxMs: number;
+}
+
 /** S3-F1: API idempotency (layer 1, Redis). The sink's (tenant_id, event_id) key stays the source of truth. */
 export interface IdempotencyConfig {
   enabled: boolean;
@@ -99,6 +113,7 @@ export interface AppConfig {
   /** events.raw unless overridden (KAFKA_TOPIC); e2e tests write to a throw-away topic, never to events.raw. */
   topic: string;
   idempotency: IdempotencyConfig;
+  schema: SchemaConfig;
   /** Debug-only crash points api:* (packages/fault-injector), need DEBUG_FAULTS=true. */
   faults: FaultConfig;
 }
@@ -199,6 +214,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     keyMode: envEnum(env, 'KAFKA_KEY_MODE', KEY_MODES, 'tenant'),
     topic: env.KAFKA_TOPIC || TOPIC_EVENTS_RAW,
     idempotency,
+    schema: {
+      serialization: envEnum(env, 'SERIALIZATION', SERIALIZATIONS, 'avro'),
+      registryUrl: env.SCHEMA_REGISTRY_URL || 'http://localhost:8081',
+      registryTimeoutMs: envInt(env, 'SCHEMA_REGISTRY_TIMEOUT_MS', 2_000, 1),
+      subject: env.SCHEMA_SUBJECT || 'events.raw-value',
+      initRetryMaxMs: envInt(env, 'SCHEMA_INIT_RETRY_MAX_MS', 5_000, 1),
+    },
     faults: loadFaultConfig(env),
   };
 }

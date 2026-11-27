@@ -18,6 +18,7 @@ import { IDEM_BREAKER, REDIS } from '../idempotency/idempotency.module.js';
 import { IdempotencyMetrics } from '../idempotency/idempotency-metrics.js';
 import type { CircuitBreaker } from '../kafka/breaker.js';
 import type { Redis } from 'ioredis';
+import { SchemaService } from '../schema/schema.service.js';
 
 @Injectable()
 export class MetricsService {
@@ -40,6 +41,7 @@ export class MetricsService {
     private readonly idem: IdempotencyMetrics,
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(IDEM_BREAKER) private readonly idemBreaker: CircuitBreaker,
+    private readonly schema: SchemaService,
   ) {
     const registers = [this.registry];
     // Live values (queue gauges, breaker, connection, health) are read at scrape / snapshot time.
@@ -166,6 +168,7 @@ export class MetricsService {
         redis_status: this.redis.status,
         breaker: this.idemBreaker.enabled ? this.idemBreaker.state() : 'disabled',
       },
+      schema: this.schema.snapshot(),
       config: {
         topic: this.cfg.topic,
         acks: this.cfg.producer.acks,

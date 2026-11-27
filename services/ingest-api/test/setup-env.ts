@@ -19,3 +19,6 @@ process.env.REDIS_URL ??= 'redis://localhost:6379/15';
 if (!/\/1[0-5]$/.test(process.env.REDIS_URL)) {
   throw new Error(`Refusing REDIS_URL=${process.env.REDIS_URL} for e2e tests: use a test database (redis://localhost:6379/15)`);
 }
+
+// Stage 3 (S3-F7): the dev registry (schemas registered with `make schemas`). Subjects are read-only for the tests.
+process.env.SCHEMA_REGISTRY_URL ??= 'http://localhost:8081';
