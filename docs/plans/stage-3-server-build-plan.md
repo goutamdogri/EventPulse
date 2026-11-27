@@ -78,7 +78,7 @@ Notes:
 
 | Component | Where | Notes |
 | --- | --- | --- |
-| Redis (single instance) | `infra/compose/docker-compose.yml`, `ep-redis` | Pinned `redis:7.4` or `redis:8.x`. `appendonly no` (it is a cache by design), `maxmemory` set, **`maxmemory-policy noeviction`** so keys are never silently evicted (a full Redis fails writes, which the failure policy handles visibly). Exporter `oliver006/redis_exporter` for memory and ops. |
+| Redis (single instance) | `infra/compose/docker-compose.yml`, `ep-redis` | **Redis 7**, pinned to an exact tag (`redis:7.x.y`, not `latest`). `appendonly no` (it is a cache by design), `maxmemory` set, **`maxmemory-policy noeviction`** so keys are never silently evicted (a full Redis fails writes, which the failure policy handles visibly). Exporter `oliver006/redis_exporter` for memory and ops. |
 | Schema Registry | same compose, `ep-schema-registry` | `confluentinc/cp-schema-registry` pinned, `SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS` pointing at the KRaft cluster, `_schemas` topic RF=3. Port 8081. |
 | toxiproxy proxies | existing `ep-toxiproxy` | Add proxies `redis` (16379 -> redis:6379) and `registry` (18081 -> schema-registry:8081), created by a script `scripts/toxiproxy-setup.sh` that is idempotent. Services connect through the proxy when `*_VIA_TOXIPROXY=true`. |
 | New topics | `kafka-init` | `events.retry.1`, `events.retry.2`, `events.retry.3` (same partition count as `events.raw`, RF=3, retention >= longest tier x 10), `config.changed` (RF=3, `cleanup.policy=compact`, key = tenant_id). |
@@ -204,7 +204,7 @@ Decision: key-based dedup on `(tenant_id, event_id)` + Kafka-committed offsets. 
 
 ### 2.1 What to build
 
-**A. Redis in compose** (see "Infrastructure"). API connects with `ioredis` (or `redis` v4+; pick one and pin it): `enableOfflineQueue: false` (never queue commands while disconnected), `commandTimeout` ~50 ms (`REDIS_COMMAND_TIMEOUT_MS`), `maxRetriesPerRequest: 0`, reconnect with backoff. Connect through toxiproxy when `REDIS_VIA_TOXIPROXY=true`.
+**A. Redis in compose** (see "Infrastructure"). API connects with `ioredis` (pick one and pin it): `enableOfflineQueue: false` (never queue commands while disconnected), `commandTimeout` ~50 ms (`REDIS_COMMAND_TIMEOUT_MS`), `maxRetriesPerRequest: 0`, reconnect with backoff. Connect through toxiproxy when `REDIS_VIA_TOXIPROXY=true`.
 
 **B. Key design (write it into `docs/api-contract.md`)**
 
@@ -268,6 +268,7 @@ All five rows of the semantics table; header and `event_id` fallback; canonicali
 | Unit | Canonical JSON: key order, whitespace, nested objects, arrays (order matters), unicode NFC, number forms | Equal hash for equivalent bodies, different hash otherwise |
 | Property (`fast-check`) | Random sequence of `(key, payload)` requests against the fake store vs a reference model (`Map`) | Same responses and same number of produce calls for every sequence |
 | e2e (Redis) | Lua scripts: complete/release ignore a foreign owner; TTLs set correctly for both states | Spec behavior |
+| e2e (Redis) | `SCRIPT FLUSH` (or restart Redis), then a request | Script reloaded automatically; request succeeds |
 | e2e (API + Kafka) | Same key twice; same `event_id` twice without header; different payload same key | 1 message in Kafka; second response 202 replayed / 422 |
 | e2e | **Concurrency:** 50 parallel identical requests | Exactly 1 Kafka message; other responses 409 or 202 replayed |
 | e2e | Same key, two tenants | 2 messages |
@@ -410,6 +411,16 @@ Done before retries and replay so that the retry, DLQ and replay code is written
 
 **G. Runbook `docs/runbooks/schema-change.md`:** how to add a field (with default), which side deploys first under the chosen mode, how to run the check locally, how to register, how to roll back, what is forbidden (renames without aliases, type changes, required fields without defaults).
 
+**H. Tests run on Avro from this step on**
+
+Steps 1 to 3 were built and tested before Avro existed, so their e2e tests send JSON. After this step, production sends Avro, and the tests must too, or they keep passing on a path production no longer uses.
+
+- **Shared test encoder.** Change the test helpers that write straight to Kafka (`services/consumer-sink/test/process-helpers.ts`, `services/ingest-api/test/kafka-helpers.ts`, the crash-matrix runner and the property-test feeders in `tests/correctness/`) to encode with `packages/schema` (`serializeEvent`) by default. Keep a `encoding: 'json'` option only for the tests that deliberately send legacy JSON (old JSON followed by Avro; replay of Stage 2 data).
+- **Re-run steps 1 to 3 under Avro.** Run the step 1 to 3 e2e suites and the crash matrix again with `SERIALIZATION=avro`, and fix anything that breaks. From now on these suites run with Avro by default.
+- **Subjects for throw-away test topics.** The registry's default naming (TopicNameStrategy) makes the subject `<topic>-value`, and every test run makes a new topic. Decision: **the test setup registers the schema under each test topic's subject** (helper `registerTestSubject(topic)` in `packages/schema/src/testing.ts`, called right after `waitTopicReady()`, with the same compatibility level as `subjects.json`). Production naming stays the default `events.raw-value`.
+- **Which registry tests use.** Tests reuse the dev registry (it sits on the same Kafka cluster), isolated by name: test topics, and so test subjects, start with `test.<run>.`, the same rule as topics today. A global teardown soft-deletes (and then hard-deletes) the `test.<run>.*` subjects so the registry does not fill up. The isolation rule is "never write to a subject without the `test.` prefix from a test", enforced by the helper.
+- **Unit tests are not affected.** Batch writer, idempotency state machine, classifier and router unit tests work on decoded rows and don't serialize anything.
+
 ### 4.2 What to cover
 
 Producer serialization, consumer deserialization, schema resolution between v1 and v2 in both directions, legacy JSON records still readable, registry down at startup and during the run, unknown ids, malformed bytes, CI rejection of each incompatible change type.
@@ -429,12 +440,16 @@ Producer serialization, consumer deserialization, schema resolution between v1 a
 | e2e (toxiproxy) | Registry down after API startup | API keeps returning 202 |
 | e2e (toxiproxy) | Registry down, fresh consumer sees an uncached id | Partition blocked/retried, nothing dead-lettered; resumes when the registry is back |
 | CI | Workflow runs on a branch with an incompatible schema change | Job fails |
+| e2e (regression) | Step 1 to 3 e2e suites and the crash matrix re-run with the Avro test encoder | All green; crash matrix unchanged (0 lost, 0 duplicates stored) |
+| e2e | `registerTestSubject` + teardown | Test subject exists during the run and is gone after; no non-`test.` subject touched |
 
 ### 4.4 Done when
 
 - [ ] Registry in compose; schemas registered by `make stage3-schemas`.
 - [ ] API produces Avro with a cached id, no runtime auto-registration.
 - [ ] Sink reads Avro and legacy JSON; registry failures classified correctly.
+- [ ] Test helpers encode Avro by default; step 1 to 3 suites and the crash matrix pass under Avro.
+- [ ] Test subjects registered per test topic and cleaned up after the run.
 - [ ] `tools/schema-check` + CI workflow reject every incompatible fixture.
 - [ ] ADR 0005 and schema-change runbook written.
 
@@ -472,7 +487,7 @@ Move `services/consumer-sink/src/sink/errors.ts` here and extend it. Each error 
   `retry.attempt`, `retry.not_before` (epoch ms = now + backoff(tier) with jitter), `retry.original_topic`, `retry.original_partition`, `retry.original_offset`, `retry.first_failed_at`, `retry.last_error_class`, `retry.last_error_code`, `retry.last_error_message` (truncated 1 KB).
 - **Router** (`packages/retry/src/router.ts`), pure: given the message, its headers and the classified error, returns `{kind: 'retry', topic, headers} | {kind: 'dlq', headers} | {kind: 'block'}`. Attempts exhausted -> DLQ.
 - **Main consumer change (batch handler):** for `TRANSIENT_RECORD`/`UNKNOWN` failures of isolated rows, publish the row to `events.retry.1` (wait for ack), then commit the source offset. The main partition keeps moving (G6: "cannot block a partition indefinitely").
-- **Retry consumer** (`services/consumer-sink/src/retry/retry-consumer.ts`, same process, separate consumer group `sink-postgres-retry`, or its own process via `SINK_ROLE=main|retry|both`):
+- **Retry consumer** (`services/consumer-sink/src/retry/retry-consumer.ts`, separate consumer group `sink-postgres-retry`). `SINK_ROLE=main|retry|both`, **default `both`** (one process runs the main and the retry consumer); `main` and `retry` let them run as separate processes later:
   - Subscribes to all retry tiers.
   - For each message: if `now < not_before`, **pause that partition**, `seek` back to this offset, and schedule `resume` at `not_before` (timer outside the handler, no sleep). Because each tier has a fixed delay, messages in a tier are close to `not_before` order, so head-of-line waiting is bounded by the jitter.
   - Otherwise process it with the **same** parse + write code as the main consumer (so dedup applies; a retried row that was meanwhile stored by a replay is just a duplicate).
@@ -814,7 +829,7 @@ Also a short section **"Where exactly-once stops"**: Kafka's idempotent producer
 - Parses `docs/delivery-guarantees.md` for every `[test: <id>]`.
 - Runs (or reads) the Vitest JSON report from `tests/correctness` and the services' e2e suites (`--reporter=json --outputFile=...`).
 - Fails if: a claim has no test reference; a referenced id does not exist; a referenced test was skipped or failed; the crash matrix is older than the latest change to `packages/fault-injector/src/points.ts` or has a row with `lost > 0` or `duplicates stored > 0`.
-- Runs in CI after the test jobs (`.github/workflows/ci.yml`, job `guarantees`). The infra-heavy e2e suites may run only locally or nightly; then the check reads the committed report from `docs/generated/test-report.json` and verifies its commit matches.
+- Runs in CI after the test jobs (`.github/workflows/ci.yml`, job `guarantees`). Decision: CI runs unit tests, `schema-check` and `guarantee-check`. The infrastructure-heavy e2e suites (Kafka, Redis, registry, Postgres) run locally with `make stage3-correctness`, which writes `docs/generated/test-report.json` (Vitest JSON, with the commit hash). That report is committed, and in CI `guarantee-check` reads it and fails if its commit is older than the last change to any source or test file.
 
 **E. Index.** `docs/README.md` (or a section in the root README) linking the guarantees document, the generated crash matrix, ADRs 0002 to 0007, the three runbooks and the updated API contract.
 
