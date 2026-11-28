@@ -168,7 +168,14 @@ Tools:
 ```bash
 scripts/produce-poison.sh --kind invalid-json|bad-uuid|oversized-field|constraint [--key KEY] [--topic T]
 scripts/dlq-peek.sh [N] [--topic events.dlq]
+pnpm dlq-replay stats|list|show|replay|reindex   # S3-F6 triage and safe replay (dry run by default)
 ```
+
+Replay (S3-F6, [runbook](../../docs/runbooks/dlq-triage-and-replay.md)) re-injects a dead letter into its source topic. The record
+carries its original key, bytes and headers plus `replay.id`, `replay.count`, `replay.dlq_partition` and `replay.dlq_offset`. The
+sink treats it like any other record: the `(tenant_id, event_id)` key turns a replay of a stored event into a counted duplicate.
+If the replayed record fails again, its new dead letter keeps the `replay.*` headers. That is how the tool's loop guard
+(`DLQ_MAX_REPLAYS`) counts rounds.
 
 `SINK_DLQ_ENABLED=false` brings back the blocking behavior on demand (used by a test, and for K6).
 

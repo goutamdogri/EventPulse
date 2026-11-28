@@ -25,6 +25,7 @@ export const CRASH_POINTS = [
   { name: 'retry:after-retry-publish-before-commit', component: 'retry', description: 'record published to the next retry tier (acked), source offset not committed' },
   { name: 'dlq:after-dlq-publish-before-meta', component: 'dlq', description: 'dead letter acknowledged by events.dlq, no dlq_meta row, source offset not committed' },
   { name: 'dlq:after-meta-before-commit', component: 'dlq', description: 'dead letter in events.dlq and dlq_meta, source offset not committed' },
+  { name: 'replay:after-produce-before-mark', component: 'replay', description: 'dlq-replay: dead letter re-injected into the source topic (acked), dlq_meta row not marked as replayed' },
 ] as const satisfies readonly CrashPointInfo[];
 
 export type CrashPointName = (typeof CRASH_POINTS)[number]['name'];

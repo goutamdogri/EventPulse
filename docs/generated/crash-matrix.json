@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-11-28T01:32:22.034Z",
-  "commit": "4b605239+dirty",
+  "generatedAt": "2026-11-28T02:59:55.230Z",
+  "commit": "6000e44a+dirty",
   "results": [
     {
       "point": "consumer:before-parse",
@@ -8,12 +8,12 @@
       "description": "chunk fetched, nothing parsed or written",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 826,
-      "committedAtCrash": 826,
+      "storedAtCrash": 836,
+      "committedAtCrash": 836,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11073,
+      "recoveryMs": 11070,
       "crashed": true
     },
     {
@@ -22,12 +22,12 @@
       "description": "chunk parsed, nothing written",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 807,
-      "committedAtCrash": 807,
+      "storedAtCrash": 855,
+      "committedAtCrash": 855,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11065,
+      "recoveryMs": 11079,
       "crashed": true
     },
     {
@@ -36,12 +36,12 @@
       "description": "transaction open (BEGIN sent), INSERT not sent",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 795,
-      "committedAtCrash": 795,
+      "storedAtCrash": 874,
+      "committedAtCrash": 874,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11067,
+      "recoveryMs": 11063,
       "crashed": true
     },
     {
@@ -50,12 +50,12 @@
       "description": "INSERT done inside the open transaction, COMMIT not sent",
       "sent": 5000,
       "duplicatesProduced": 0,
-      "storedAtCrash": 840,
-      "committedAtCrash": 840,
+      "storedAtCrash": 848,
+      "committedAtCrash": 848,
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11071,
+      "recoveryMs": 11064,
       "crashed": true
     },
     {
@@ -65,11 +65,11 @@
       "sent": 5000,
       "duplicatesProduced": 0,
       "storedAtCrash": 1002,
-      "committedAtCrash": 789,
-      "duplicatesProcessed": 213,
+      "committedAtCrash": 868,
+      "duplicatesProcessed": 134,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11070,
+      "recoveryMs": 11099,
       "crashed": true
     },
     {
@@ -83,7 +83,7 @@
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 11318,
+      "recoveryMs": 10308,
       "crashed": true
     },
     {
@@ -112,7 +112,7 @@
       "duplicatesProcessed": 1,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 608,
+      "recoveryMs": 609,
       "crashed": true,
       "notes": "client: 1 network error, 5x 409, 0x replayed 202"
     },
@@ -127,7 +127,7 @@
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 611,
+      "recoveryMs": 609,
       "crashed": true,
       "notes": "client: 1 network error, 0x 409, 1x replayed 202"
     },
@@ -142,7 +142,7 @@
       "duplicatesProcessed": 0,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 10061,
+      "recoveryMs": 10059,
       "crashed": true,
       "notes": "retry-tier records 10 for 10 marked rows, DLQ 0"
     },
@@ -152,14 +152,14 @@
       "description": "record published to the next retry tier (acked), source offset not committed",
       "sent": 300,
       "duplicatesProduced": 0,
-      "storedAtCrash": 90,
-      "committedAtCrash": 2,
-      "duplicatesProcessed": 90,
+      "storedAtCrash": 0,
+      "committedAtCrash": 0,
+      "duplicatesProcessed": 1,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 10582,
+      "recoveryMs": 10703,
       "crashed": true,
-      "notes": "retry-tier records 2 for 10 marked rows, DLQ 0"
+      "notes": "retry-tier records 1 for 10 marked rows, DLQ 0"
     },
     {
       "point": "dlq:after-dlq-publish-before-meta",
@@ -167,12 +167,12 @@
       "description": "dead letter acknowledged by events.dlq, no dlq_meta row, source offset not committed",
       "sent": 305,
       "duplicatesProduced": 1,
-      "storedAtCrash": 103,
-      "committedAtCrash": 102,
-      "duplicatesProcessed": 1,
+      "storedAtCrash": 101,
+      "committedAtCrash": 2,
+      "duplicatesProcessed": 99,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 10050,
+      "recoveryMs": 10045,
       "crashed": true,
       "notes": "DLQ records 6, dlq_meta rows 5 (one per poison record), DLQ duplicates counted 0"
     },
@@ -182,14 +182,29 @@
       "description": "dead letter in events.dlq and dlq_meta, source offset not committed",
       "sent": 305,
       "duplicatesProduced": 1,
-      "storedAtCrash": 103,
-      "committedAtCrash": 102,
+      "storedAtCrash": 85,
+      "committedAtCrash": 2,
+      "duplicatesProcessed": 83,
+      "duplicatesStored": 0,
+      "lost": 0,
+      "recoveryMs": 10296,
+      "crashed": true,
+      "notes": "DLQ records 6, dlq_meta rows 5 (one per poison record), DLQ duplicates counted 1"
+    },
+    {
+      "point": "replay:after-produce-before-mark",
+      "component": "replay",
+      "description": "dlq-replay: dead letter re-injected into the source topic (acked), dlq_meta row not marked as replayed",
+      "sent": 50,
+      "duplicatesProduced": 1,
+      "storedAtCrash": 37,
+      "committedAtCrash": 7,
       "duplicatesProcessed": 1,
       "duplicatesStored": 0,
       "lost": 0,
-      "recoveryMs": 10302,
+      "recoveryMs": 779,
       "crashed": true,
-      "notes": "DLQ records 6, dlq_meta rows 5 (one per poison record), DLQ duplicates counted 1"
+      "notes": "20 dead letters, 7 marked at the crash, 21 records re-injected in total, every dlq_meta row marked once"
     }
   ]
 }

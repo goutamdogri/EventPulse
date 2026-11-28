@@ -17,3 +17,4 @@ export type { Jitter } from './backoff.js';
 export { RETRY_HEADERS, originalHeaders, parseRetryHeaders, retryHeaders, route, validateTierPolicy } from './router.js';
 export type { Failure, Headers, Origin, RetryState, Route, TierPolicy } from './router.js';
 export { TokenBucket } from './limiter.js';
+export { DLQ_HEADERS, REPLAY_HEADERS, headerValue } from './headers.js';

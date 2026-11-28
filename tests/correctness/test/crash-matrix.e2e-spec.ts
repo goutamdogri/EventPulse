@@ -8,7 +8,7 @@ import { CRASH_POINTS } from '@eventpulse/fault-injector';
 import { StoreProbe } from '../src/harness.js';
 import { renderMarkdown } from '../src/crash-matrix/report.js';
 import type { CrashResult } from '../src/crash-matrix/report.js';
-import { CONSUMER_CHUNK, SCENARIOS } from '../src/crash-matrix/scenarios.js';
+import { CONSUMER_CHUNK, REPLAY_CRASH_MARKED, SCENARIOS } from '../src/crash-matrix/scenarios.js';
 
 const OUT = resolve(import.meta.dirname, '../../../docs/generated');
 // CRASH_MATRIX_ONLY=consumer:after-db-commit,... runs a subset (the files are only written for a full run).
@@ -54,6 +54,13 @@ const EXPECT: Record<string, (r: CrashResult) => void> = {
     expect(r.duplicatesProduced).toBeGreaterThanOrEqual(1);
     expect(r.notes).toMatch(/DLQ duplicates counted [1-9]/);
   },
+  // Replay: produced (acked) but the dlq_meta row not marked: the re-run replays that one record again (one extra
+  // record in the source topic), the sink absorbs it as a counted duplicate; every dead letter is marked once.
+  'replay:after-produce-before-mark': (r) => {
+    expect(r.duplicatesProduced).toBe(1);
+    expect(r.duplicatesProcessed).toBe(1);
+    expect(r.committedAtCrash).toBe(REPLAY_CRASH_MARKED);
+  },
   // Key done: the retry gets the original result (replayed 202), nothing new is produced.
   'api:after-complete-before-response': (r) => {
     expect(r.duplicatesProduced).toBe(0);
@@ -91,7 +98,7 @@ describe('crash matrix', () => {
     expect(r.lost).toBe(0);
     expect(r.duplicatesStored).toBe(0);
     if (point.component === 'consumer') expect(r.duplicatesProduced).toBe(0); // consumer crashes never touch the log
-    // retry / dlq rows: duplicatesProduced counts records in the source (retry) or dead letters published twice (dlq)
+    // retry / dlq / replay rows: duplicatesProduced counts records in the source (retry) or dead letters published twice (dlq)
     EXPECT[point.name]?.(r);
   });
 });

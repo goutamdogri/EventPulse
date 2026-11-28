@@ -74,6 +74,13 @@ schema-check-against: ## Newest local version vs the REAL subject on the running
 schema-fixtures: ## Incompatible fixtures must be rejected, compatible ones accepted (also shows BACKWARD's verdict)
 	node tools/schema-check/src/cli.ts fixtures
 
+# --- DLQ triage and replay (S3-F6: tools/dlq-replay, docs/runbooks/dlq-triage-and-replay.md) ---
+.PHONY: dlq-stats dlq-replay
+dlq-stats: ## Unreplayed dead letters by class, code, tenant, failed topic and age (start of triage)
+	node tools/dlq-replay/src/cli.ts stats
+dlq-replay: ## DLQ tool: make dlq-replay ARGS="replay --error-class PERMANENT_DB" (dry run unless ARGS has --execute)
+	node tools/dlq-replay/src/cli.ts $(or $(ARGS),--help)
+
 # --- Build and run single services ---
 .PHONY: build api-start api-start-pinned consumer-start consumer-start-pinned
 build: ## Build the shared packages, ingest-api and consumer-sink

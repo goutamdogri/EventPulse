@@ -12,7 +12,7 @@
 import type { Pool } from 'pg';
 import { createKafka } from '@eventpulse/kafka-config';
 import type { KafkaClientConfig, Producer } from '@eventpulse/kafka-config';
-import { originalHeaders, truncate } from '@eventpulse/retry';
+import { DLQ_HEADERS, originalHeaders, truncate } from '@eventpulse/retry';
 import type { ErrorClass, Origin } from '@eventpulse/retry';
 import type { RawMessage } from './parse.js';
 
@@ -36,19 +36,8 @@ export interface DlqContext {
   groupId: string;
 }
 
-export const DLQ_HEADERS = {
-  originalTopic: 'dlq.original_topic',
-  originalPartition: 'dlq.original_partition',
-  originalOffset: 'dlq.original_offset',
-  failedTopic: 'dlq.failed_topic',
-  consumerGroup: 'dlq.consumer_group',
-  errorClass: 'dlq.error_class',
-  errorCode: 'dlq.error_code',
-  errorMessage: 'dlq.error_message',
-  attempts: 'dlq.attempts',
-  firstFailedAt: 'dlq.first_failed_at',
-  failedAt: 'dlq.failed_at',
-} as const;
+// Header names live in packages/retry (shared with tools/dlq-replay).
+export { DLQ_HEADERS };
 
 export function originOf(d: DeadLetter, ctx: DlqContext, now: Date): Origin {
   return d.origin ?? { topic: ctx.sourceTopic, partition: d.raw.partition, offset: d.raw.offset, firstFailedAt: now.toISOString() };

@@ -1,6 +1,6 @@
 // One crash scenario per component. The crash matrix iterates over CRASH_POINTS (packages/fault-injector) and
 // looks up the component's scenario here, so a point whose component has no scenario fails the build
-// (crash-matrix.spec.ts). Later Stage 3 steps add replay, relay and admin scenarios.
+// (crash-matrix.spec.ts). Later Stage 3 steps add relay and admin scenarios.
 import { randomUUID } from 'node:crypto';
 import type { CrashPointInfo } from '@eventpulse/fault-injector';
 import { createKafka, loadKafkaClientConfig } from '@eventpulse/kafka-config';
@@ -24,6 +24,7 @@ import type { SinkProcess } from '../harness.js';
 import type { CrashResult } from './report.js';
 import { postEvent, spawnApi, waitApiReady } from '../api-process.js';
 import type { ApiProcess } from '../api-process.js';
+import { dlqLane, runReplayCli } from '../dlq-replay.js';
 
 export type Scenario = (point: CrashPointInfo, store: StoreProbe) => Promise<CrashResult>;
 
@@ -318,9 +319,65 @@ async function dlqScenario(point: CrashPointInfo, store: StoreProbe): Promise<Cr
   }
 }
 
+// --- DLQ replay tool (S3-F6) -------------------------------------------------------------------------------------
+// REPLAY_N fixable dead letters (PERMANENT_DB from an injected fault that the restarted sink no longer has) next to
+// REPLAY_GOOD healthy events. `dlq-replay replay --execute` is killed at the point on its REPLAY_CRASH_AT-th record;
+// the SAME command is run again. Every event must be stored once and every dead letter marked once.
+
+const REPLAY_N = 20;
+const REPLAY_GOOD = 30;
+const REPLAY_CRASH_AT = 8;
+/** Marked when the tool dies on its REPLAY_CRASH_AT-th record: the ones before it. */
+export const REPLAY_CRASH_MARKED = REPLAY_CRASH_AT - 1;
+
+async function replayScenario(point: CrashPointInfo, store: StoreProbe): Promise<CrashResult> {
+  const lane = await dlqLane(store);
+  try {
+    const { sink } = await lane.seed({ fixable: REPLAY_N, poison: 0, good: REPLAY_GOOD });
+    const inLogBefore = await logTotal(lane.source);
+    const args = ['replay', '--dlq-topic', lane.dlq, '--json', '--rate', '0', '--execute', '--yes'];
+    const crashing = await runReplayCli(args, { DEBUG_FAULTS: 'true', FAULTS: `${point.name}@${REPLAY_CRASH_AT}` });
+    const crashed = crashing.signal === 'SIGKILL' && crashing.stderr.includes(`CRASH_AT=${point.name}`);
+    if (!crashed) throw new Error(`${point.name}: replay did not crash there (code ${crashing.code}, signal ${crashing.signal})\n${crashing.stderr.slice(-2000)}`);
+    const marked = async () => Number((await store.pool.query('select count(*) from dlq_meta where dlq_topic = $1 and replayed_at is not null', [lane.dlq])).rows[0].count);
+    const markedAtCrash = await marked();
+    const storedAtCrash = await store.countTenant(lane.tenant);
+
+    const t0 = Date.now();
+    const again = await runReplayCli(args);
+    if (again.code !== 0) throw new Error(`${point.name}: re-run failed (${again.code})\n${again.stderr.slice(-2000)}`);
+    await waitFor(async () => (await store.countTenant(lane.tenant)) >= REPLAY_N + REPLAY_GOOD && (await marked()) === REPLAY_N && (await fullyCommitted(lane.group, lane.source)), 60_000, `${point.name}: recovery`);
+    const recoveryMs = Date.now() - t0;
+    await sleep(300);
+    const st = await sink.stats();
+    const fp = await store.fingerprint(lane.tenant);
+    const replayedRecords = (await logTotal(lane.source)) - inLogBefore;
+    const twice = Number((await store.pool.query('select count(*) from dlq_meta where dlq_topic = $1 and replay_count <> 1', [lane.dlq])).rows[0].count);
+    if (twice !== 0) throw new Error(`${point.name}: ${twice} dlq_meta row(s) not marked exactly once`);
+    return {
+      point: point.name,
+      component: point.component,
+      description: point.description,
+      sent: REPLAY_N + REPLAY_GOOD,
+      duplicatesProduced: replayedRecords - REPLAY_N, // the record produced before the crash but not marked
+      storedAtCrash,
+      committedAtCrash: markedAtCrash, // replay: dead letters marked as replayed when the tool died
+      duplicatesProcessed: st.duplicates,
+      duplicatesStored: fp.rows - fp.distinct,
+      lost: REPLAY_N + REPLAY_GOOD - fp.distinct,
+      recoveryMs,
+      crashed,
+      notes: `${REPLAY_N} dead letters, ${markedAtCrash} marked at the crash, ${replayedRecords} records re-injected in total, every dlq_meta row marked once`,
+    };
+  } finally {
+    await lane.cleanup();
+  }
+}
+
 export const SCENARIOS: Readonly<Record<string, Scenario>> = {
   consumer: consumerScenario,
   api: apiScenario,
   retry: retryScenario,
   dlq: dlqScenario,
+  replay: replayScenario,
 };
