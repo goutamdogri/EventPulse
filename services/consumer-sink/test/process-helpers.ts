@@ -127,7 +127,9 @@ export function spawnSink(env: Record<string, string>): SinkProcess {
   const log: string[] = [];
   const proc = spawn(process.execPath, ['dist/main.js'], {
     cwd: resolve(import.meta.dirname, '..'),
-    env: { ...process.env, LOG_ENABLED: 'true', KAFKA_LOG_LEVEL: 'error', CONSUMER_FROM_BEGINNING: 'true', METRICS_PORT: String(port), ...env },
+    // Retry tiers are off unless a test passes its own throw-away RETRY_TOPICS: the defaults are the REAL
+    // events.retry.* topics, which tests must never touch.
+    env: { ...process.env, LOG_ENABLED: 'true', KAFKA_LOG_LEVEL: 'error', CONSUMER_FROM_BEGINNING: 'true', METRICS_PORT: String(port), RETRY_TOPICS_ENABLED: env.RETRY_TOPICS ? 'true' : 'false', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   proc.stdout!.on('data', (d) => log.push(String(d)));

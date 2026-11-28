@@ -95,8 +95,8 @@ test: ## Unit tests of every package, service, tool and the correctness suite (n
 test-e2e: toxiproxy migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api
 	$(SINK) test:e2e
 	$(API) test:e2e
-correctness: migrate-test ## Correctness suite: log replay + crash matrix (regenerates docs/generated/crash-matrix.*)
+correctness: toxiproxy migrate-test ## Correctness suite: log replay + crash matrix (regenerates docs/generated/crash-matrix.*)
 	$(CORRECTNESS) test:e2e
-crash-matrix: migrate-test ## Only the crash matrix; one point: make crash-matrix ONLY=consumer:after-db-commit
+crash-matrix: toxiproxy migrate-test ## Only the crash matrix; one point: make crash-matrix ONLY=consumer:after-db-commit
 	$(if $(ONLY),CRASH_MATRIX_ONLY=$(ONLY)) $(CORRECTNESS) crash-matrix
 test-all: test test-e2e correctness ## Everything above, in order

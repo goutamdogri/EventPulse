@@ -130,17 +130,38 @@ Measured with real SIGKILLs (`test/commit-protocol.e2e-spec.ts`, 5,000 events, c
 
 A record that fails **on its own** goes to `events.dlq`, and the offset moves past it. A database that is **down** never sends anything to the DLQ. Before the fix, one bad record blocked its partition forever: see [the before/after note](../../notebook/stage-2/s2-f4-poison-before-fix.md).
 
+Stage 3 (S3-F5): one classifier for the whole system (`packages/retry`), and retry tiers instead of in-handler retries.
+
 | Class | Examples | What the sink does |
 | --- | --- | --- |
-| `PERMANENT_PARSE` | invalid JSON, bad UUID, bad timestamp, type > 100 chars, missing tenant / `received_at` header | dead-letter at once (`dlq.attempts=1`) |
-| `PERMANENT_DB` | Postgres rejects this row: `22xxx` (e.g. `22P05` `\u0000` in jsonb, `22001` too long), `23xxx` | bisect the chunk to isolate the row, store the good rows, retry the bad row `SINK_MAX_RETRIES` times with backoff, then dead-letter it |
-| `UNKNOWN` | an error with no recognized code | same as `PERMANENT_DB` |
-| `TRANSIENT_DB` | DB unreachable / overloaded / restarting: connection errors, `08xxx`, `53xxx`, `57P0x`, `57014`, `40001`, `40P01` | **never DLQ.** Retry with backoff for `SINK_TRANSIENT_RETRY_WINDOW_MS`, then pause the partition for `SINK_PAUSE_MS` and read the chunk again. No hot loop, no loss |
-| `SYSTEMIC_DB` | every row would fail: `42xxx` (missing column...), `28xxx`, `3D000`, `0A`, `XX` | treated like `TRANSIENT_DB`, so a schema mistake doesn't dead-letter the whole topic. Needs a human |
+| `PERMANENT_PARSE` | invalid JSON, bad UUID, bad timestamp, not Avro / Avro decode error, missing `received_at` | dead-letter at once (`dlq.attempts=0`) |
+| `PERMANENT_SCHEMA` | unknown schema id, writer schema the reader cannot resolve | dead-letter at once |
+| `PERMANENT_DB` | Postgres rejects this row: `22xxx` (e.g. `22P05` `\u0000` in jsonb), `23xxx` | bisect the chunk to isolate the row, store the good rows, dead-letter the bad row (retrying bad data never helps) |
+| `TRANSIENT_RECORD` | `40001` serialization failure, `40P01` deadlock, `57014` statement timeout | the whole chunk is retried in-process `RETRY_INPROCESS_ATTEMPTS` (2) times; a row still failing on its own goes to **retry tier 1** |
+| `UNKNOWN` | an error with no recognized code | retry tiers, like `TRANSIENT_RECORD` |
+| `TRANSIENT_SYSTEMIC` | DB / registry unreachable, overloaded, restarting: connection errors, `08xxx`, `53xxx`, `57P0x` | **never a retry topic, never DLQ.** Backoff for `SINK_TRANSIENT_RETRY_WINDOW_MS`, then pause the partition for `SINK_PAUSE_MS` and read the chunk again |
+| `SYSTEMIC_CONFIG` | every row would fail: `42xxx` (missing column...), `28xxx`, `3D000`, `0A`, `XX` | like `TRANSIENT_SYSTEMIC` (a schema mistake must not dead-letter the topic). Needs a human |
 
-Order per chunk: write the good rows (DB commit) → publish dead letters and wait for the ack (`acks=all`) → only then commit the offset. If the DLQ publish fails, nothing is committed and the chunk is retried, so a DLQ record can be duplicated (noted for Stage 3).
+**Retry tiers** `events.retry.1..3` (delays `RETRY_TIER_DELAYS_MS` 5 s / 60 s / 10 min, equal jitter): the record keeps its original
+bytes and headers plus `retry.attempt`, `retry.not_before`, `retry.original_{topic,partition,offset}`, `retry.first_failed_at`,
+`retry.last_error_{class,code,message}`. The retry-tier consumer (group `<CONSUMER_GROUP_ID>-retry`, same process with
+`SINK_ROLE=both`) **pauses** a partition until its head record is due (no sleeping), then runs the same parse + write: stored, or
+the next tier, or the DLQ after the last tier (`dlq.attempts=3`). At most `RETRY_MAX_RATE_PER_S` records/s go to the tiers; above
+that the chunk pauses instead (a retry storm is contained, C9). `RETRY_TOPICS_ENABLED=false` = the Stage 2 behavior.
 
-DLQ record: **value = the original bytes, key = the original key**, original headers kept, plus `dlq.original_topic`, `dlq.original_partition`, `dlq.original_offset`, `dlq.consumer_group`, `dlq.error_class`, `dlq.error_code`, `dlq.error_message` (≤ 1 KB), `dlq.attempts`, `dlq.failed_at`.
+Order per chunk: write the good rows (DB commit) → retry records to their tier (acked) → dead letters to `events.dlq` (acked) →
+`dlq_meta` row (one per source record, `ON CONFLICT DO NOTHING`) → only then commit the offset. A crash in between re-publishes;
+`dlq_meta` keeps one row and counts the DLQ duplicate (`ep_dlq_duplicates_total`). Crash points: `retry:*`, `dlq:*`.
+
+DLQ record: **value = the original bytes, key = the original key**, original headers kept (`retry.*` dropped), plus
+`dlq.original_topic/partition/offset` (where it was FIRST consumed, also for a record that failed on a tier), `dlq.failed_topic`,
+`dlq.consumer_group`, `dlq.error_class`, `dlq.error_code`, `dlq.error_message` (≤ 1 KB), `dlq.attempts`, `dlq.first_failed_at`,
+`dlq.failed_at`.
+
+Metrics: `ep_retry_published_total{tier}`, `ep_retry_processed_total{tier,result}`, `ep_retry_lag_seconds{tier}`,
+`ep_retry_paused_partitions`, `ep_retry_rate_limited_total`, `ep_retry_routed_total`, `ep_dlq_published_total{error_class}`,
+`ep_dlq_duplicates_total`, `ep_dlq_size`, `ep_dlq_oldest_unreplayed_age_seconds`. Invariant: consumed = inserted + duplicates +
+dlq + retried. ADR 0006; proof `tests/correctness/test/retry.e2e-spec.ts`.
 
 Tools:
 

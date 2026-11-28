@@ -263,3 +263,40 @@ describe('evaluate: Stage 3 duplicate accounting (S3-F3)', () => {
     expect(committedSum(snap({ raw: parts([10, 10], [3, 0]), committed: [{ partition: 1, offset: 7 }] }))).toBe(3 + 7);
   });
 });
+
+describe('evaluate: Stage 3 retry tiers and dlq_meta (S3-F5)', () => {
+  it('records on their way through a retry tier: F counts them as retried; J balances once they are stored', () => {
+    const { start, end, summary } = stage3();
+    // 10 records went to a retry tier and were stored from there: the same process counts them twice as consumed
+    // (main + retry tier), once as retried and once as inserted.
+    end.consumers = [c3({ uptime_s: 1060, consumed: 1210, attempted: 1200, inserted: 1200, retried: 10 })];
+    const r = evaluate(start, end, summary, facts());
+    expect(status(r, 'F')).toBe('ok');
+    expect(status(r, 'J')).toBe('ok');
+    expect(r.numbers.retried_delta).toBe(10);
+  });
+
+  it('F fails when retried is not accounted for', () => {
+    const { start, end, summary } = stage3();
+    end.consumers = [c3({ uptime_s: 1060, consumed: 1210, attempted: 1200, inserted: 1200 })]; // 10 consumed, unexplained
+    expect(status(evaluate(start, end, summary, facts()), 'F')).toBe('fail');
+  });
+
+  it('J counts dead letters by dlq_meta rows: a dead letter published twice after a crash is still ONE record', () => {
+    const { start, end, summary } = stage3();
+    start.db.dlq_meta_rows = 7;
+    end.db.dlq_meta_rows = 8; // one poison record of the run
+    end.db.rows_total = 1199; // ... so 999 of the 1000 accepted got stored
+    end.consumers = [c3({ uptime_s: 1060, consumed: 1202, attempted: 1199, inserted: 1199, dlq: 3 })]; // published 3 times? no: 1 + 2 re-reads
+    const r = evaluate(start, end, summary, facts({ rows_distinct: 999, dlq_run: 1, dlq_new_total: 2 }));
+    expect(r.numbers.dead_letters_new).toBe(1);
+    expect(r.checks.find((c) => c.id === 'J')!.detail).toMatch(/new dead letters \(dlq_meta\) 1/);
+    expect(status(r, 'J')).toBe('ok');
+  });
+
+  it('without dlq_meta (Stage 2 database), J falls back to the DLQ topic records', () => {
+    const { start, end, summary } = stage3();
+    const r = evaluate(start, end, summary, facts());
+    expect(r.checks.find((c) => c.id === 'J')!.detail).toMatch(/new DLQ records 0/);
+  });
+});

@@ -2,7 +2,7 @@
 // crash-matrix runner (tests/correctness/crash-matrix) builds its scenarios from here, so a point added without
 // a matrix scenario fails the build.
 //
-// Name format: <component>:<step>. Later Stage 3 steps add retry:*, dlq:*, replay:*, relay:*, admin:*.
+// Name format: <component>:<step>. Later Stage 3 steps add replay:*, relay:*, admin:*.
 
 export interface CrashPointInfo {
   readonly name: string;
@@ -21,6 +21,10 @@ export const CRASH_POINTS = [
   { name: 'api:before-produce', component: 'api', description: 'idempotency key acquired (inflight), event not produced, no response' },
   { name: 'api:after-produce-before-complete', component: 'api', description: 'event acknowledged by Kafka, key still inflight, no response' },
   { name: 'api:after-complete-before-response', component: 'api', description: 'event acknowledged, key marked done, no response sent' },
+  { name: 'retry:before-insert', component: 'retry', description: 'retry-tier consumer: transaction open, the retried row not inserted' },
+  { name: 'retry:after-retry-publish-before-commit', component: 'retry', description: 'record published to the next retry tier (acked), source offset not committed' },
+  { name: 'dlq:after-dlq-publish-before-meta', component: 'dlq', description: 'dead letter acknowledged by events.dlq, no dlq_meta row, source offset not committed' },
+  { name: 'dlq:after-meta-before-commit', component: 'dlq', description: 'dead letter in events.dlq and dlq_meta, source offset not committed' },
 ] as const satisfies readonly CrashPointInfo[];
 
 export type CrashPointName = (typeof CRASH_POINTS)[number]['name'];

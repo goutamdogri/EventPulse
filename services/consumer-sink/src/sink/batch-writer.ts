@@ -14,7 +14,7 @@
 // Nothing else in the transaction may have a side effect for a duplicate row.
 
 import type { Pool, PoolClient } from 'pg';
-import type { FaultInjector } from '@eventpulse/fault-injector';
+import type { CrashPointName, FaultInjector } from '@eventpulse/fault-injector';
 import type { EventRow } from './parse.js';
 
 export function insertSql(table = 'events', dedup = true): string {
@@ -160,6 +160,8 @@ export interface BatchWriterOptions {
   track?: { group: string; topic: string };
   /** Crash points consumer:before-insert / consumer:after-insert-before-commit and injected errors. */
   faults?: Pick<FaultInjector, 'hit' | 'maybeFail'>;
+  /** Which points this writer hits (the retry-tier consumer's writer uses retry:before-insert). */
+  points?: { beforeInsert?: CrashPointName; afterInsert?: CrashPointName };
   /** Called when the conflict check fails after the commit (logged by the caller). */
   onConflictCheckError?: (e: unknown) => void;
 }
@@ -183,8 +185,12 @@ export class BatchWriter {
       let inserted: { tenant_id: string; event_id: string; received_at: Date }[];
       await client.query('BEGIN');
       try {
-        this.opts.faults?.hit('consumer:before-insert', { rows: rows.length });
-        this.opts.faults?.maybeFail('consumer:before-insert', () => rows.map((r) => r.payload));
+        const before = this.opts.points ? this.opts.points.beforeInsert : 'consumer:before-insert';
+        const after = this.opts.points ? this.opts.points.afterInsert : 'consumer:after-insert-before-commit';
+        if (before) {
+          this.opts.faults?.hit(before, { rows: rows.length });
+          this.opts.faults?.maybeFail(before, () => rows.map((r) => r.payload));
+        }
         // RETURNING lists only the rows actually inserted (not the ones ON CONFLICT skipped), so freshness is
         // measured for real first writes, never for duplicates.
         const r = await client.query<{ tenant_id: string; event_id: string; received_at: Date }>(this.sql, toColumns(rows, this.dedup));
@@ -193,7 +199,7 @@ export class BatchWriter {
           const m = maxOffsets(rows);
           await client.query(SINK_OFFSETS_SQL, [this.opts.track.group, this.opts.track.topic, m.partitions, m.offsets]);
         }
-        this.opts.faults?.hit('consumer:after-insert-before-commit', { rows: rows.length });
+        if (after) this.opts.faults?.hit(after, { rows: rows.length });
         await client.query('COMMIT');
       } catch (e) {
         await client.query('ROLLBACK').catch(() => undefined);

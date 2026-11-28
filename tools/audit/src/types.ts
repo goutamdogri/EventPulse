@@ -40,6 +40,8 @@ export interface ConsumerStats {
   dup_redelivered?: number;
   dup_unknown?: number;
   conflicts?: number;
+  /** S3-F5: records sent to a retry tier (consumed = inserted + duplicates + dlq + retried). */
+  retried?: number;
 }
 
 export interface Snapshot {
@@ -50,7 +52,10 @@ export interface Snapshot {
   raw: PartitionOffsets[];
   dlq: PartitionOffsets[];
   committed: { partition: number; offset: number }[]; // -1 = never committed
-  db: { rows_total: number };
+  /** dlq_meta_rows: dead-lettered SOURCE records (one per record, duplicates excluded); null before migration 0006. */
+  db: { rows_total: number; dlq_meta_rows?: number | null };
+  /** S3-F5: lag of the retry-tier group summed over the tier topics (null when there are no tier topics). */
+  retry_lag?: number | null;
   api: ApiStats | null;
   consumers: ConsumerStats[];
   notes: string[];

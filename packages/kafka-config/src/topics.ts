@@ -3,4 +3,6 @@
 
 export const TOPIC_EVENTS_RAW = 'events.raw';
 export const TOPIC_EVENTS_DLQ = 'events.dlq';
+/** Stage 3 (S3-F5): retry tiers, in order. Created by kafka-init with the partition count of events.raw. */
+export const TOPICS_EVENTS_RETRY = ['events.retry.1', 'events.retry.2', 'events.retry.3'] as const;
 export const GROUP_SINK_POSTGRES = 'sink-postgres';

@@ -1,7 +1,7 @@
 import { encodeEvent } from '@eventpulse/kafka-config';
 import { SinkStats } from '../observability/sink-stats.js';
 import type { EventRow, RawMessage } from '../sink/parse.js';
-import { DbUnavailableError, DlqPublishError, OffsetCommitError, PoisonBatchError, RegistryUnavailableChunkError, handleBatch } from './batch-handler.js';
+import { DbUnavailableError, DlqMetaError, DlqPublishError, OffsetCommitError, PoisonBatchError, RegistryUnavailableChunkError, RetryRateLimitedError, handleBatch } from './batch-handler.js';
 import { EventSerde, RegistryClient, encodeWire } from '@eventpulse/schema';
 import type { RetryPolicy } from './batch-handler.js';
 import type { DeadLetter } from '../sink/dlq-publisher.js';
@@ -60,6 +60,7 @@ function setup(opts: { write?: WriteFn; maxRows?: number; crashAt?: CrashPoint; 
       if (opts.dlqPublish) await opts.dlqPublish(letters);
       dead.push(...letters);
       calls.push(`dlq:${letters.length}`);
+      return letters.map((letter, i) => ({ letter, origin: { topic: 't', partition: letter.raw.partition, offset: letter.raw.offset, firstFailedAt: 'x' }, failedTopic: 't', dlqTopic: 'dlq', dlqPartition: 0, dlqOffset: String(i), failedAt: new Date() }));
     }),
   };
   const sleeps: number[] = [];
@@ -302,7 +303,7 @@ describe('S2-F4 poison handling', () => {
     await handleBatch(c, s.deps);
     expect(s.stats.inserted).toBe(99);
     expect(s.dead).toHaveLength(1);
-    expect(s.dead[0]).toMatchObject({ errorClass: 'PERMANENT_PARSE', errorCode: 'invalid_json', attempts: 1 });
+    expect(s.dead[0]).toMatchObject({ errorClass: 'PERMANENT_PARSE', errorCode: 'invalid_json', attempts: 0 }); // no retry tier tried
     expect(s.dead[0].raw).toBe(ms[50]); // original bytes, untouched
     expect(c.resolveOffset).toHaveBeenCalledWith(ms[99].offset);
     expect(s.calls.indexOf('dlq:1')).toBeLessThan(s.calls.indexOf(`resolve:${ms[99].offset}`)); // DLQ ack before commit
@@ -365,7 +366,7 @@ describe('S2-F4 poison handling', () => {
     await handleBatch(c, s.deps);
     expect(s.dlq.publish).not.toHaveBeenCalled();
     expect(s.sleeps).toEqual([100, 200, 400, 800, 1000]); // doubled, capped at maxMs
-    expect(s.stats.retriesByClass.TRANSIENT_DB).toBe(5);
+    expect(s.stats.retriesByClass.TRANSIENT_SYSTEMIC).toBe(5);
     expect(c.commitOffsetsIfNecessary).toHaveBeenCalledTimes(1);
     expect(s.calls.filter((x) => x.startsWith('resolve')).length).toBe(1);
   });
@@ -402,7 +403,7 @@ describe('S2-F4 poison handling', () => {
     const s = setup({ write: async () => Promise.reject(pgErr('42703', 'column "x" does not exist')), retry: { transientWindowMs: 0 } });
     await expect(handleBatch(s.ctx(msgs(2)), s.deps)).rejects.toBeInstanceOf(DbUnavailableError);
     expect(s.dlq.publish).not.toHaveBeenCalled();
-    expect(s.stats.errorsByClass.SYSTEMIC_DB).toBe(1);
+    expect(s.stats.errorsByClass.SYSTEMIC_CONFIG).toBe(1);
   });
 
   it('DLQ publish rejects: offset not resolved, not committed; the rows were written but the chunk is not "complete"', async () => {
@@ -512,5 +513,114 @@ describe('S3-F7 schema registry unavailable', () => {
     const s = setup({ maxRows: 10 });
     await handleBatch(s.ctx(msgs(3)), { ...s.deps, schema: { serde, acceptJson: true } });
     expect(s.calls).toContain('kafka-commit');
+  });
+});
+
+describe('S3-F5 retry tiers (main consumer)', () => {
+  const policy = { topics: ['r1', 'r2', 'r3'], delaysMs: [5000, 60000, 600000], jitter: 'equal' as const };
+  const idOf = (m: RawMessage) => JSON.parse(m.value!.toString()).event_id as string;
+  /** Rows whose event_id is in `bad` fail with `code` (every time); the others are stored. */
+  const failing = (bad: Set<string>, code: string): WriteFn => async (rows) => {
+    if (rows.some((r) => bad.has(r.event_id))) throw pgErr(code);
+    return { attempted: rows.length, inserted: rows.length, durationMs: 1 };
+  };
+  function tiered(o: { write: WriteFn; maxRows?: number; limiterOk?: boolean; dlqMeta?: any }) {
+    const s = setup({ write: o.write, maxRows: o.maxRows ?? 10 });
+    const published: any[] = [];
+    const retryOut = { publish: vi.fn(async (ls: any[]) => void (published.push(...ls), s.calls.push(`retry:${ls.length}`))) };
+    const deps = {
+      ...s.deps,
+      tiers: { policy, inProcessAttempts: 2 },
+      retryOut,
+      limiter: { tryTake: () => o.limiterOk ?? true },
+      sourceTopic: 'events.raw',
+      ...(o.dlqMeta ? { dlqMeta: o.dlqMeta } : {}),
+    };
+    return { ...s, deps, published, retryOut };
+  }
+
+  it('a row failing alone with TRANSIENT_RECORD: chunk retried in-process twice, then isolated, the row goes to tier 1; the rest is stored', async () => {
+    const ms = msgs(4);
+    const t = tiered({ write: failing(new Set([idOf(ms[2])]), '40001') });
+    await handleBatch(t.ctx(ms), t.deps);
+    expect(t.published).toHaveLength(1);
+    expect(t.published[0]).toMatchObject({
+      route: { kind: 'retry', tier: 1, topic: 'r1', attempt: 1, notBefore: expect.any(Number) },
+      origin: { topic: 'events.raw', partition: 0, offset: ms[2].offset },
+      failure: { errorClass: 'TRANSIENT_RECORD', errorCode: '40001' },
+    });
+    expect(t.calls.indexOf('retry:1')).toBeLessThan(t.calls.indexOf('kafka-commit')); // acked before the offset moves
+    expect(t.stats.retried).toBe(1);
+    expect(t.stats.consumed).toBe(t.stats.inserted + t.stats.duplicates + t.stats.dlq + t.stats.retried); // the invariant
+    expect(t.stats.retriesByClass.TRANSIENT_RECORD).toBe(2); // the two in-process attempts
+    expect(t.dead).toEqual([]);
+  });
+
+  it('a whole-chunk TRANSIENT_RECORD that goes away in-process: no retry-topic traffic at all', async () => {
+    let fails = 2;
+    const t = tiered({ write: async (rows) => { if (fails-- > 0) throw pgErr('40P01'); return { attempted: rows.length, inserted: rows.length, durationMs: 1 }; } });
+    await handleBatch(t.ctx(msgs(5)), t.deps);
+    expect(t.published).toEqual([]);
+    expect(t.stats.inserted).toBe(5);
+  });
+
+  it('UNKNOWN errors also go to the retry tiers', async () => {
+    const ms = msgs(2);
+    const t = tiered({ write: async (rows) => { if (rows.some((r) => r.event_id === idOf(ms[0]))) throw new TypeError('weird'); return { attempted: rows.length, inserted: rows.length, durationMs: 1 }; } });
+    await handleBatch(t.ctx(ms), t.deps);
+    expect(t.published.map((p) => p.failure.errorClass)).toEqual(['UNKNOWN']);
+  });
+
+  it('PERMANENT_DB with tiers on: dead-lettered at once (no in-process retries, no retry tier), attempts 0, with tenant and event id', async () => {
+    const ms = msgs(3);
+    const t = tiered({ write: failing(new Set([idOf(ms[1])]), '23502') });
+    await handleBatch(t.ctx(ms), t.deps);
+    expect(t.published).toEqual([]);
+    expect(t.dead).toHaveLength(1);
+    expect(t.dead[0]).toMatchObject({ errorClass: 'PERMANENT_DB', errorCode: '23502', attempts: 0, tenantId: 't', eventId: idOf(ms[1]) });
+    expect(t.stats.retriesByClass.PERMANENT_DB).toBeUndefined();
+  });
+
+  it('a dependency that is down never goes to a retry topic or the DLQ, tiers or not', async () => {
+    const t = tiered({ write: failing(new Set(msgs(0).map(idOf)), '57P01') });
+    t.deps.writer.writeChunk = vi.fn(async () => { throw pgErr('ECONNREFUSED'); }) as any;
+    await expect(handleBatch(t.ctx(msgs(3)), { ...t.deps, retry: { ...t.deps.retry, transientWindowMs: 0 } })).rejects.toBeInstanceOf(DbUnavailableError);
+    expect(t.published).toEqual([]);
+    expect(t.dead).toEqual([]);
+  });
+
+  it('too many records for the retry tiers (rate limit): the partition is paused instead, nothing published or committed', async () => {
+    const ms = msgs(3);
+    const t = tiered({ write: failing(new Set(ms.map(idOf)), '40001'), limiterOk: false });
+    await expect(handleBatch(t.ctx(ms), t.deps)).rejects.toBeInstanceOf(RetryRateLimitedError);
+    expect(t.published).toEqual([]);
+    expect(t.calls).toContain('pause:5000');
+    expect(t.calls).not.toContain('kafka-commit');
+    expect(t.stats.retryRateLimited).toBe(1);
+    expect(t.stats.chunkFailures.retry_rate_limited).toBe(1);
+  });
+
+  it('dead letters are indexed in dlq_meta before the commit; re-published ones are counted as DLQ duplicates', async () => {
+    const record = vi.fn(async (ps: any[]) => ({ inserted: ps.length - 1, duplicates: 1 }));
+    const t = tiered({ write: okWrite, dlqMeta: { record } });
+    await handleBatch(t.ctx([poison(), poison(), msg()]), t.deps);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record.mock.calls[0][0]).toHaveLength(2);
+    expect(t.stats.dlqDuplicates).toBe(1);
+  });
+
+  it('dlq_meta down (blocking): pause, nothing committed, the chunk is read again', async () => {
+    const record = vi.fn(async () => { throw pgErr('ECONNREFUSED'); });
+    const t = tiered({ write: okWrite, dlqMeta: { record } });
+    await expect(handleBatch(t.ctx([poison(), msg()]), t.deps)).rejects.toBeInstanceOf(DlqMetaError);
+    expect(t.calls).toContain('pause:5000');
+    expect(t.calls).not.toContain('kafka-commit');
+    expect(t.stats.chunkFailures.db_unavailable).toBe(1);
+  });
+
+  it('tiers OFF: TRANSIENT_RECORD blocks the partition like before (Stage 2 behavior)', async () => {
+    const s = setup({ write: failing(new Set(), '40001'), maxRows: 10 });
+    s.deps.writer.writeChunk = vi.fn(async () => { throw pgErr('40001'); }) as any;
+    await expect(handleBatch(s.ctx(msgs(2)), { ...s.deps, retry: { ...s.deps.retry, transientWindowMs: 0 } })).rejects.toBeInstanceOf(DbUnavailableError);
   });
 });

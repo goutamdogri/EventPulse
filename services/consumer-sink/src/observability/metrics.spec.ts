@@ -38,7 +38,7 @@ function deps(stats: SinkStats, dupesPerChunk: number) {
     maxRows: 50,
     faults: new FaultInjector(undefined, () => undefined),
     processingDelayMs: 0,
-    dlq: { publish: async () => undefined },
+    dlq: { publish: async () => [] },
     retry: { dlqEnabled: true, maxRetries: 3, baseMs: 1, maxMs: 1, transientWindowMs: 0, pauseMs: 1 },
   };
 }

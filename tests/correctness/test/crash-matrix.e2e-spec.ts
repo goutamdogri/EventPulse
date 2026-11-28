@@ -42,6 +42,18 @@ const EXPECT: Record<string, (r: CrashResult) => void> = {
     expect(r.duplicatesProduced).toBe(1);
     expect(r.duplicatesProcessed).toBe(1);
   },
+  // Retry tier crash with the row's transaction open: rolled back, the retry record is processed again: no loss.
+  'retry:before-insert': (r) => expect(r.duplicatesProduced).toBe(0),
+  // Retry record acked, source offset not committed: the main consumer re-reads the chunk. Its marked rows go to
+  // tier 1 again (or are stored directly): duplicates may be processed, never stored twice.
+  'retry:after-retry-publish-before-commit': (r) => expect(r.duplicatesProduced).toBe(0),
+  // DLQ record acked, no dlq_meta row: re-read, published again (a DLQ duplicate), indexed ONCE.
+  'dlq:after-dlq-publish-before-meta': (r) => expect(r.duplicatesProduced).toBeGreaterThanOrEqual(1),
+  // DLQ record + dlq_meta row, offset not committed: published again, the second index insert is a counted duplicate.
+  'dlq:after-meta-before-commit': (r) => {
+    expect(r.duplicatesProduced).toBeGreaterThanOrEqual(1);
+    expect(r.notes).toMatch(/DLQ duplicates counted [1-9]/);
+  },
   // Key done: the retry gets the original result (replayed 202), nothing new is produced.
   'api:after-complete-before-response': (r) => {
     expect(r.duplicatesProduced).toBe(0);
@@ -79,6 +91,7 @@ describe('crash matrix', () => {
     expect(r.lost).toBe(0);
     expect(r.duplicatesStored).toBe(0);
     if (point.component === 'consumer') expect(r.duplicatesProduced).toBe(0); // consumer crashes never touch the log
+    // retry / dlq rows: duplicatesProduced counts records in the source (retry) or dead letters published twice (dlq)
     EXPECT[point.name]?.(r);
   });
 });

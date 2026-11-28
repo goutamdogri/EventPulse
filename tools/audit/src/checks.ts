@@ -11,13 +11,15 @@
 //   E  distinct rows (run) == accepted - dlq_run                       below: acked but missing from Postgres CRITICAL
 //                                                                      (only once drained; before that it is "not final")
 //                                                                      above: 503 but stored (expected), reported
-//   F  per consumer process: consumed - inserted - dlq == duplicates   metrics bug
-//      and reprocessed + redelivered + unknown == duplicates
+//   F  per consumer process: consumed - inserted - dlq - retried       metrics bug
+//      == duplicates, and reprocessed + redelivered + unknown == duplicates
 //   G  duplicates absorbed by the sink, by cause                       reported, never hidden
 //   H  log start offset moved during the run (retention deleted data)  reported
 //   I  group lag at the end == 0                                       otherwise NOT DRAINED (exit 2)
 //   J  every record the group committed is accounted for:              unexplained != 0 with complete counters, drained:
-//      committed - new rows - new DLQ records - redelivered - unknown  CRITICAL (a record vanished or a counter lies)
+//      committed - new rows - new dead letters - redelivered - unknown CRITICAL (a record vanished or a counter lies)
+//      (dead letters = new dlq_meta rows, one per source record, when    (drained includes the retry-tier group: a record
+//       migration 0006 is there; else new DLQ topic records)             waiting on a tier is committed but not stored yet)
 //      == 0 ("unexplained difference", must be zero)                   counters incomplete (restart): reported
 //   K  API idempotency (replayed, in progress, key reused, fail open)  reported; fail_open / fail_closed are findings
 //
@@ -124,7 +126,8 @@ export function evaluate(start: Snapshot, end: Snapshot, k6: K6Summary | null, f
     deltaInserted += c.inserted;
     deltaDup += c.duplicates;
     deltaDlq += c.dlq;
-    if (c.consumed - c.inserted - c.dlq !== c.duplicates) broken.push(`${c.url}: ${c.consumed} - ${c.inserted} - ${c.dlq} != ${c.duplicates}`);
+    const retried = c.retried ?? 0;
+    if (c.consumed - c.inserted - c.dlq - retried !== c.duplicates) broken.push(`${c.url}: ${c.consumed} - ${c.inserted} - ${c.dlq} - ${retried} retried != ${c.duplicates}`);
     if (c.dup_reprocessed === undefined) {
       causesComplete = false; // a Stage 2 sink: no split
       continue;
@@ -181,12 +184,18 @@ export function evaluate(start: Snapshot, end: Snapshot, k6: K6Summary | null, f
   // J: every record the group committed during the run is accounted for.
   const committedDelta = committedSum(end) - committedSum(start);
   const rowsNew = end.db.rows_total - start.db.rows_total;
+  // One per dead-lettered SOURCE record (dlq_meta, S3-F5): a dead letter published twice after a crash is not a
+  // second record. Without dlq_meta (Stage 2), the DLQ topic's new records.
+  const metaS = start.db.dlq_meta_rows;
+  const metaE = end.db.dlq_meta_rows;
+  const deadNew = typeof metaS === 'number' && typeof metaE === 'number' ? metaE - metaS : facts.dlq_new_total;
+  const deadLabel = typeof metaS === 'number' && typeof metaE === 'number' ? 'new dead letters (dlq_meta)' : 'new DLQ records';
   let unexplained: number | null = null;
   if (!causesComplete) {
     add({ id: 'J', title: 'every committed record accounted for', status: 'skipped', critical: true, detail: 'no duplicate split from the consumers (Stage 2 sink, or no /debug/stats)' });
   } else {
-    unexplained = committedDelta - rowsNew - facts.dlq_new_total - causes.redelivered - causes.unknown;
-    const formula = `committed ${committedDelta} - new rows ${rowsNew} - new DLQ ${facts.dlq_new_total} - redelivered ${causes.redelivered} - unknown ${causes.unknown} = ${unexplained}`;
+    unexplained = committedDelta - rowsNew - deadNew - causes.redelivered - causes.unknown;
+    const formula = `committed ${committedDelta} - new rows ${rowsNew} - ${deadLabel} ${deadNew} - redelivered ${causes.redelivered} - unknown ${causes.unknown} = ${unexplained}`;
     if (unexplained === 0) add({ id: 'J', title: 'every committed record accounted for', status: 'ok', critical: true, detail: formula });
     else if (!facts.drained || notes.length > 0)
       add({ id: 'J', title: 'every committed record accounted for', status: 'finding', critical: false, detail: `not final / best-effort (${!facts.drained ? 'not drained' : notes.join('; ')}): ${formula}` });
@@ -246,6 +255,9 @@ export function evaluate(start: Snapshot, end: Snapshot, k6: K6Summary | null, f
       dup_reprocessed: causesComplete ? causes.reprocessed : null,
       dup_redelivered: causesComplete ? causes.redelivered : null,
       dup_unknown: causesComplete ? causes.unknown : null,
+      dead_letters_new: deadNew,
+      retried_delta: perProcess.reduce((a, c) => a + (c.retried ?? 0), 0),
+      retry_lag_end: end.retry_lag ?? null,
       conflicts_delta: causesComplete ? causes.conflicts : null,
       committed_delta: committedDelta,
       rows_new_total: rowsNew,
@@ -291,6 +303,7 @@ export function consumerDeltas(start: ConsumerStats[], end: ConsumerStats[], ela
               conflicts: (e.conflicts ?? 0) - (s.conflicts ?? 0),
             }
           : {}),
+        ...(e.retried !== undefined ? { retried: e.retried - (s.retried ?? 0) } : {}),
       });
     }
   }

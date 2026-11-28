@@ -27,13 +27,23 @@ export interface PartitionLag {
   lag: number;
 }
 
-export type ChunkFailure = 'poison_blocked' | 'db_unavailable' | 'registry_unavailable' | 'dlq_publish' | 'commit' | 'other';
+export type ChunkFailure =
+  | 'poison_blocked'
+  | 'db_unavailable'
+  | 'registry_unavailable'
+  | 'dlq_publish'
+  | 'retry_publish'
+  | 'retry_rate_limited'
+  | 'commit'
+  | 'other';
 
 export interface ChunkCompletion {
   consumed: number;
   attempted: number;
   inserted: number;
   dlq: { errorClass: ErrorClass }[];
+  /** S3-F5: records sent to a retry tier (consumed but neither stored nor dead-lettered yet). */
+  retried?: number;
   /** S3-F3: the duplicates (attempted - inserted) split by cause; reprocessed + redelivered + unknown = duplicates. */
   causes?: CauseSplit;
   /** Messages whose offset was already stored once for this partition. */
@@ -57,6 +67,15 @@ export class SinkStats {
   private revokedAtMs: number | undefined;
   dlq = 0;
   dlqErrors = 0;
+  /** S3-F5: retry tiers and DLQ bookkeeping. consumed = inserted + duplicates + dlq + retried. */
+  retried = 0;
+  retryRateLimited = 0;
+  retryPublishErrors = 0;
+  retryWaits = 0;
+  dlqDuplicates = 0;
+  dlqSize: { unreplayed: number; oldestAgeS: number | null; at: string } | null = null;
+  readonly retryPublishedByTier: Record<string, number> = {};
+  readonly retryProcessedByTier: Record<string, Record<string, number>> = {};
   isolations = 0;
   pauses = 0;
   // PERMANENT_PARSE / PERMANENT_DB / UNKNOWN: one per bad record (counted once, when dead-lettered or blocked).
@@ -120,16 +139,49 @@ export class SinkStats {
       this.reprocessedByPartition[p] = (this.reprocessedByPartition[p] ?? 0) + c.reprocessed;
       this.m.reprocessed.inc({ partition: p }, c.reprocessed);
     }
+    if (c.retried) {
+      this.retried += c.retried;
+      this.m.retried.inc(c.retried);
+    }
     for (const d of c.dlq) {
       this.dlq++;
       this.dlqByClass[d.errorClass] = (this.dlqByClass[d.errorClass] ?? 0) + 1;
       this.m.dlq.inc({ error_class: d.errorClass });
+      this.m.dlqPublished.inc({ error_class: d.errorClass });
     }
   }
 
   observeRegistry(op: string, ok: boolean, seconds: number) {
     this.m.registryRequests.inc({ op, result: ok ? 'ok' : 'error' });
     this.m.registryLatency.observe({ op }, seconds);
+  }
+
+  countRetryPublished(tier: number) {
+    const t = String(tier);
+    this.retryPublishedByTier[t] = (this.retryPublishedByTier[t] ?? 0) + 1;
+    this.m.retryPublished.inc({ tier: t });
+  }
+
+  countRetryRateLimited() {
+    this.m.retryRateLimited.inc();
+  }
+
+  /** One record processed on a retry tier: stored | duplicate | next_tier | dlq. lagS = processing time - not_before. */
+  countRetryProcessed(tier: number, result: string, lagS?: number) {
+    const t = String(tier);
+    const byResult = (this.retryProcessedByTier[t] ??= {});
+    byResult[result] = (byResult[result] ?? 0) + 1;
+    this.m.retryProcessed.inc({ tier: t, result });
+    if (lagS !== undefined) this.m.retryLag.observe({ tier: t }, Math.max(0, lagS));
+  }
+
+  countDlqDuplicates(n: number) {
+    this.dlqDuplicates += n;
+    this.m.dlqDuplicates.inc(n);
+  }
+
+  setDlqSize(s: { unreplayed: number; oldestAgeS: number | null }) {
+    this.dlqSize = { ...s, at: new Date().toISOString() };
   }
 
   countDeserializeFailure(reason: string) {
@@ -255,6 +307,16 @@ export class SinkStats {
       dlq: this.dlq,
       dlq_by_class: { ...this.dlqByClass },
       dlq_errors: this.dlqErrors,
+      dlq_duplicates: this.dlqDuplicates,
+      dlq_size: this.dlqSize,
+      retried: this.retried,
+      retry: {
+        published_by_tier: { ...this.retryPublishedByTier },
+        processed_by_tier: structuredClone(this.retryProcessedByTier),
+        waits: this.retryWaits,
+        rate_limited: this.retryRateLimited,
+        publish_errors: this.retryPublishErrors,
+      },
       errors_by_class: { ...this.errorsByClass },
       retries_by_class: { ...this.retriesByClass },
       chunk_failures_by_reason: { ...this.chunkFailures },
@@ -333,6 +395,37 @@ function createMetrics(registry: Registry, st: SinkStats, live?: () => { pgTotal
     }),
     registryRequests: new Counter({ name: 'ep_schema_registry_requests_total', help: 'Schema Registry requests by operation and result.', labelNames: ['op', 'result'], registers }),
     registryLatency: new Histogram({ name: 'ep_schema_registry_latency_seconds', help: 'Schema Registry request latency.', labelNames: ['op'], buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5], registers }),
+    retried: new Counter({ name: 'ep_retry_routed_total', help: 'Records sent to a retry tier instead of being stored (consumed = inserted + duplicates + dlq + retried).', registers }),
+    retryPublished: new Counter({ name: 'ep_retry_published_total', help: 'Records published to a retry tier, by tier.', labelNames: ['tier'], registers }),
+    retryProcessed: new Counter({ name: 'ep_retry_processed_total', help: 'Records processed on a retry tier, by tier and result (stored | duplicate | next_tier | dlq).', labelNames: ['tier', 'result'], registers }),
+    retryLag: new Histogram({ name: 'ep_retry_lag_seconds', help: 'Retry-tier processing time minus not_before (how late a retry ran).', labelNames: ['tier'], buckets: [0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 900], registers }),
+    retryRateLimited: new Counter({ name: 'ep_retry_rate_limited_total', help: 'Chunks paused because their records for the retry tiers exceeded RETRY_MAX_RATE_PER_S.', registers }),
+    retryPausedPartitions: new Gauge({
+      name: 'ep_retry_paused_partitions',
+      help: 'Retry-tier partitions paused waiting for not_before.',
+      registers,
+      collect() {
+        this.set([...st.paused].filter((k) => k.startsWith('retry:')).length);
+      },
+    }),
+    dlqPublished: new Counter({ name: 'ep_dlq_published_total', help: 'Dead letters published to events.dlq, by error class (Stage 3 catalogue name).', labelNames: ['error_class'], registers }),
+    dlqDuplicates: new Counter({ name: 'ep_dlq_duplicates_total', help: 'Dead letters published again for a source record already in dlq_meta (crash between DLQ publish and offset commit).', registers }),
+    dlqSize: new Gauge({
+      name: 'ep_dlq_size',
+      help: 'Dead-lettered source records not replayed yet (dlq_meta).',
+      registers,
+      collect() {
+        if (st.dlqSize) this.set(st.dlqSize.unreplayed);
+      },
+    }),
+    dlqOldest: new Gauge({
+      name: 'ep_dlq_oldest_unreplayed_age_seconds',
+      help: 'Age of the oldest dead letter not replayed yet.',
+      registers,
+      collect() {
+        if (st.dlqSize) this.set(st.dlqSize.oldestAgeS ?? 0);
+      },
+    }),
     deserializeFailures: new Counter({
       name: 'ep_schema_deserialize_failures_total',
       help: 'Records whose value could not be deserialized, by reason: not_avro | unknown_schema_id | incompatible_schema | avro_decode | json_not_accepted.',

@@ -113,6 +113,8 @@ services:
       EVENTS_RAW_PARTITIONS: ${EVENTS_RAW_PARTITIONS:-6}
       EVENTS_RAW_RETENTION_MS: ${EVENTS_RAW_RETENTION_MS:-86400000}   # 24 h
       EVENTS_DLQ_RETENTION_MS: ${EVENTS_DLQ_RETENTION_MS:-604800000}  # 7 days
+      # Stage 3 (S3-F5): retry tiers keep records at least 10x the longest tier delay (10 min) -> 7 days.
+      EVENTS_RETRY_RETENTION_MS: ${EVENTS_RETRY_RETENTION_MS:-604800000}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -124,6 +126,11 @@ services:
         $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic events.dlq \
           --partitions 3 --replication-factor 3 \
           --config min.insync.replicas=2 --config retention.ms="$$EVENTS_DLQ_RETENTION_MS"
+        for tier in 1 2 3; do
+          $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic events.retry.$$tier \
+            --partitions "$$EVENTS_RAW_PARTITIONS" --replication-factor 3 \
+            --config min.insync.replicas=2 --config retention.ms="$$EVENTS_RETRY_RETENTION_MS"
+        done
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.raw
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.dlq
 
@@ -175,7 +182,7 @@ services:
       - --kafka.server=kafka2:19092
       - --kafka.server=kafka3:19092
       - --refresh.metadata=2s            # default 30 s is too slow to see a leader change
-      - --topic.filter=^(k4-.*|events\..*)$
+      - --topic.filter=^(k4-.*|events\..*)$                # includes events.retry.N
       - --group.filter=.*
 
 volumes:

@@ -1,11 +1,15 @@
 // One crash scenario per component. The crash matrix iterates over CRASH_POINTS (packages/fault-injector) and
 // looks up the component's scenario here, so a point whose component has no scenario fails the build
-// (crash-matrix.spec.ts). Later Stage 3 steps add retry, dlq, replay, relay and admin scenarios.
+// (crash-matrix.spec.ts). Later Stage 3 steps add replay, relay and admin scenarios.
 import { randomUUID } from 'node:crypto';
 import type { CrashPointInfo } from '@eventpulse/fault-injector';
+import { createKafka, loadKafkaClientConfig } from '@eventpulse/kafka-config';
 import {
   StoreProbe,
   createTopic,
+  createTopicNamed,
+  fixedEvents,
+  produceFixed,
   deleteTopic,
   fullyCommitted,
   groupOffsets,
@@ -178,7 +182,145 @@ async function apiScenario(point: CrashPointInfo, store: StoreProbe): Promise<Cr
 
 const logTotal = async (topic: string) => (await withAdmin((a) => a.fetchTopicOffsets(topic))).reduce((s, p) => s + Number(p.high), 0);
 
+// --- Retry tiers and DLQ (S3-F5) ---------------------------------------------------------------------------------
+// One sink process (main + retry-tier consumer), throw-away source, tier and DLQ topics. The crashing process is
+// armed with the point; the restarted one runs without any fault, so every record ends up stored (or dead-lettered).
+
+const RETRY_N = 300;
+const RETRY_MARKED = 10;
+const DLQ_POISON = 5;
+
+async function retryLane() {
+  const source = await createTopic(3);
+  const tiers = await Promise.all([1, 2, 3].map((n) => createTopicNamed(`${source}-retry-${n}`, 3)));
+  const dlq = await createTopicNamed(`${source}-dlq`, 1);
+  const id = randomUUID().slice(0, 8);
+  const group = `crash-matrix-${id}`;
+  const env = {
+    CONSUMER_TOPIC: source,
+    CONSUMER_GROUP_ID: group,
+    SINK_DLQ_TOPIC: dlq,
+    RETRY_TOPICS: tiers.join(','),
+    RETRY_TIER_DELAYS_MS: '500,500,500',
+    SINK_MAX_ROWS: '100',
+    SINK_RETRY_BASE_MS: '20',
+    SINK_RETRY_MAX_MS: '100',
+    CONSUMER_SESSION_TIMEOUT_MS: '10000',
+  };
+  const cleanup = () => Promise.all([source, ...tiers, dlq].map(deleteTopic));
+  return { source, tiers, dlq, group, retryGroup: `${group}-retry`, env, tenant: `crash_${id}`, cleanup };
+}
+
+const sumTopics = async (ts: string[]) => {
+  let n = 0;
+  for (const t of ts) n += await logTotal(t);
+  return n;
+};
+
+/** Raw records that are not JSON (PERMANENT_PARSE -> DLQ at once), keyed so they spread over the partitions. */
+async function producePoisonRaw(topic: string, n: number) {
+  const producer = createKafka({ ...loadKafkaClientConfig(process.env, 'crash-matrix-poison'), logLevel: 'error' }).producer({ kafkaJS: { acks: -1, idempotent: true } } as any);
+  await producer.connect();
+  try {
+    await producer.send({ topic, messages: Array.from({ length: n }, (_, i) => ({ key: `poison-${i}`, value: Buffer.from(`{not json ${i}`), headers: { received_at: new Date().toISOString() } })) });
+  } finally {
+    await producer.disconnect();
+  }
+}
+
+async function crashAndRecover(point: CrashPointInfo, store: StoreProbe, lane: Awaited<ReturnType<typeof retryLane>>, crashEnv: Record<string, string>, done: () => Promise<boolean>) {
+  const procs: SinkProcess[] = [];
+  try {
+    const crashing = spawnSink({ ...lane.env, DEBUG_FAULTS: 'true', ...crashEnv });
+    procs.push(crashing);
+    const exit = await Promise.race([crashing.exited, sleep(60_000).then(() => null)]);
+    const crashed = exit?.signal === 'SIGKILL' && crashing.log.join('').includes(`CRASH_AT=${point.name}`);
+    if (!crashed) throw new Error(`${point.name}: process did not crash there (exit ${JSON.stringify(exit)})\n${crashing.log.join('').slice(-3000)}`);
+    const storedAtCrash = await store.countTenant(lane.tenant);
+    const committedAtCrash = await totalCommitted(lane.group, lane.source);
+    const t0 = Date.now();
+    const recovered = spawnSink(lane.env);
+    procs.push(recovered);
+    await waitFor(done, 90_000, `${point.name}: recovery`);
+    const recoveryMs = Date.now() - t0;
+    await sleep(300);
+    return { crashed, storedAtCrash, committedAtCrash, recoveryMs, stats: await recovered.stats() };
+  } finally {
+    await Promise.all(procs.map((p) => p.stop()));
+  }
+}
+
+async function retryScenario(point: CrashPointInfo, store: StoreProbe): Promise<CrashResult> {
+  const lane = await retryLane();
+  try {
+    const events = fixedEvents(RETRY_N, 'crash-retry').map((e, i) => (i % (RETRY_N / RETRY_MARKED) === 0 ? { ...e, payload: { ...e.payload, tag: 'retry-me' } } : e));
+    await produceFixed(lane.source, lane.tenant, events);
+    // The main path fails the marked rows (-> tier 1); the crashing process dies at the point on its first hit.
+    const r = await crashAndRecover(point, store, lane, { FAULT_ERRORS: 'consumer:before-insert=40001x*:marker=retry-me', FAULTS: `${point.name}@1` }, async () => {
+      if ((await store.countTenant(lane.tenant)) < RETRY_N || !(await fullyCommitted(lane.group, lane.source))) return false;
+      for (const t of lane.tiers) if (!(await fullyCommitted(lane.retryGroup, t))) return false;
+      return true;
+    });
+    const fp = await store.fingerprint(lane.tenant);
+    return {
+      point: point.name,
+      component: point.component,
+      description: point.description,
+      sent: RETRY_N,
+      duplicatesProduced: (await logTotal(lane.source)) - RETRY_N,
+      storedAtCrash: r.storedAtCrash,
+      committedAtCrash: r.committedAtCrash,
+      duplicatesProcessed: r.stats.duplicates,
+      duplicatesStored: fp.rows - fp.distinct,
+      lost: RETRY_N - fp.distinct,
+      recoveryMs: r.recoveryMs,
+      crashed: r.crashed,
+      notes: `retry-tier records ${await sumTopics(lane.tiers)} for ${RETRY_MARKED} marked rows, DLQ ${await logTotal(lane.dlq)}`,
+    };
+  } finally {
+    await lane.cleanup();
+    await store.cleanup(lane.tenant, lane.group);
+  }
+}
+
+async function dlqScenario(point: CrashPointInfo, store: StoreProbe): Promise<CrashResult> {
+  const lane = await retryLane();
+  const metaRows = async () => Number((await store.pool.query('select count(*) from dlq_meta where dlq_topic = $1', [lane.dlq])).rows[0].count);
+  try {
+    await produceFixed(lane.source, lane.tenant, fixedEvents(RETRY_N, 'crash-dlq'));
+    await producePoisonRaw(lane.source, DLQ_POISON);
+    const r = await crashAndRecover(point, store, lane, { FAULTS: `${point.name}@1` }, async () =>
+      (await store.countTenant(lane.tenant)) >= RETRY_N && (await fullyCommitted(lane.group, lane.source)) && (await metaRows()) >= DLQ_POISON,
+    );
+    const fp = await store.fingerprint(lane.tenant);
+    const dlqRecords = await logTotal(lane.dlq);
+    const meta = await metaRows();
+    if (meta !== DLQ_POISON) throw new Error(`${point.name}: dlq_meta has ${meta} rows for ${DLQ_POISON} poison records`);
+    return {
+      point: point.name,
+      component: point.component,
+      description: point.description,
+      sent: RETRY_N + DLQ_POISON,
+      duplicatesProduced: dlqRecords - DLQ_POISON, // dead letters published twice (re-read after the crash)
+      storedAtCrash: r.storedAtCrash,
+      committedAtCrash: r.committedAtCrash,
+      duplicatesProcessed: r.stats.duplicates,
+      duplicatesStored: fp.rows - fp.distinct,
+      lost: RETRY_N - fp.distinct,
+      recoveryMs: r.recoveryMs,
+      crashed: r.crashed,
+      notes: `DLQ records ${dlqRecords}, dlq_meta rows ${meta} (one per poison record), DLQ duplicates counted ${r.stats.dlq_duplicates}`,
+    };
+  } finally {
+    await lane.cleanup();
+    await store.pool.query('delete from dlq_meta where dlq_topic = $1', [lane.dlq]);
+    await store.cleanup(lane.tenant, lane.group);
+  }
+}
+
 export const SCENARIOS: Readonly<Record<string, Scenario>> = {
   consumer: consumerScenario,
   api: apiScenario,
+  retry: retryScenario,
+  dlq: dlqScenario,
 };

@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import {
   GROUP_SINK_POSTGRES,
   TOPIC_EVENTS_DLQ,
+  TOPICS_EVENTS_RETRY,
   TOPIC_EVENTS_RAW,
   envBool,
   envEnum,
@@ -10,11 +11,29 @@ import {
 } from '@eventpulse/kafka-config';
 import type { KafkaClientConfig } from '@eventpulse/kafka-config';
 import { loadFaultConfig } from '@eventpulse/fault-injector';
+import { JITTERS, parseClassifierOverride, validateTierPolicy } from '@eventpulse/retry';
+import type { ErrorClass, Jitter } from '@eventpulse/retry';
 import type { FaultConfig } from '@eventpulse/fault-injector';
 
 export const CONFIG = Symbol('CONFIG');
 
 export const ASSIGNORS = ['roundRobin', 'range', 'cooperativeSticky'] as const;
+export const SINK_ROLES = ['main', 'retry', 'both'] as const;
+export type SinkRole = (typeof SINK_ROLES)[number];
+
+/** S3-F5: retry tiers. */
+export interface RetryTiersConfig {
+  /** false = Stage 2 behavior: in-process retries (SINK_MAX_RETRIES) then DLQ; TRANSIENT_RECORD blocks. */
+  enabled: boolean;
+  topics: string[];
+  delaysMs: number[];
+  jitter: Jitter;
+  /** Records per second that may go to the retry tiers before the consumer switches to pausing (0 = unlimited). */
+  maxRatePerS: number;
+  /** A whole chunk failing with TRANSIENT_RECORD is retried in-process this many times before isolation. */
+  inProcessAttempts: number;
+  groupId: string;
+}
 export type Assignor = (typeof ASSIGNORS)[number];
 
 export interface ConsumerConfig {
@@ -68,6 +87,13 @@ export interface AppConfig {
     pauseMs: number;
   };
   faults: FaultConfig;
+  /** main = events.raw only, retry = the retry tiers only, both (default) = one process does both. */
+  role: SinkRole;
+  retryTiers: RetryTiersConfig;
+  /** Debug-only (C9): CLASSIFIER_OVERRIDE=<code>=<CLASS>,... forces error codes into classes. */
+  classifierOverride: Map<string, ErrorClass>;
+  /** How often dlq_meta is counted for ep_dlq_size / ep_dlq_oldest_unreplayed_age_seconds (0 = off). */
+  dlqSizePollMs: number;
   /** S3-F7: Avro decoding. */
   schema: {
     registryUrl: string;
@@ -131,6 +157,26 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new Error('SINK_TRANSIENT_RETRY_WINDOW_MS + SINK_RETRY_MAX_MS must be < CONSUMER_REBALANCE_TIMEOUT_MS');
   }
 
+  const tierTopics = (env.RETRY_TOPICS || TOPICS_EVENTS_RETRY.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
+  const tierDelays = (env.RETRY_TIER_DELAYS_MS || '5000,60000,600000').split(',').map((s) => Number(s.trim()));
+  const maxAttempts = envInt(env, 'RETRY_MAX_ATTEMPTS', tierTopics.length, 1);
+  if (maxAttempts > tierTopics.length) throw new Error(`RETRY_MAX_ATTEMPTS=${maxAttempts} but only ${tierTopics.length} RETRY_TOPICS`);
+  const retryTiers: RetryTiersConfig = {
+    enabled: envBool(env, 'RETRY_TOPICS_ENABLED', true),
+    topics: tierTopics.slice(0, maxAttempts),
+    delaysMs: tierDelays.slice(0, maxAttempts),
+    jitter: envEnum(env, 'RETRY_JITTER', JITTERS, 'equal'),
+    maxRatePerS: envInt(env, 'RETRY_MAX_RATE_PER_S', 100, 0),
+    inProcessAttempts: envInt(env, 'RETRY_INPROCESS_ATTEMPTS', 2, 0),
+    groupId: env.RETRY_GROUP_ID || `${consumer.groupId}-retry`,
+  };
+  validateTierPolicy(retryTiers);
+  if (retryTiers.topics.includes(consumer.topic)) throw new Error('RETRY_TOPICS must not include CONSUMER_TOPIC');
+  const classifierOverride = parseClassifierOverride(env.CLASSIFIER_OVERRIDE);
+  if (classifierOverride.size > 0 && !envBool(env, 'DEBUG_FAULTS', false)) {
+    throw new Error('CLASSIFIER_OVERRIDE needs DEBUG_FAULTS=true (it is a debug-only switch for experiment C9)');
+  }
+
   return {
     port: envInt(env, 'METRICS_PORT', 8001, 0),
     databaseUrl,
@@ -149,6 +195,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     faults,
     retry,
+    role: envEnum(env, 'SINK_ROLE', SINK_ROLES, 'both'),
+    retryTiers,
+    classifierOverride,
+    dlqSizePollMs: envInt(env, 'DLQ_SIZE_POLL_MS', 10_000, 0),
     schema: {
       registryUrl: env.SCHEMA_REGISTRY_URL || 'http://localhost:8081',
       registryTimeoutMs: envInt(env, 'SCHEMA_REGISTRY_TIMEOUT_MS', 2_000, 1),

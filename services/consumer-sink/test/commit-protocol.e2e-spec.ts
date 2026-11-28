@@ -127,7 +127,7 @@ describe('S2-F3 commit protocol (real process)', () => {
       await sleep(5000);
       expect(await totalCommitted(group, topic)).toBe(0); // nothing committed without a DB commit
       expect(await db.countRows(ids)).toBe(0);
-      expect((await sink.stats()).errors_by_class.TRANSIENT_DB).toBeGreaterThan(0); // S2-F4: retried with backoff inside the batch first
+      expect((await sink.stats()).errors_by_class.TRANSIENT_SYSTEMIC).toBeGreaterThan(0); // S2-F4: retried with backoff inside the batch first
 
       await setPgProxy(true);
       await waitFor(async () => (await db.countRows(ids)) === 500 && (await fullyCommitted(group, topic)), 60_000, '500 rows after the DB came back');
