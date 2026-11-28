@@ -13,6 +13,12 @@ RELAY         := pnpm --filter @eventpulse/outbox-relay
 CORRECTNESS   := pnpm --filter @eventpulse/correctness-tests
 UNIT_PACKAGES := --filter "./packages/*" --filter "./services/*" --filter "./tools/*" --filter "./tests/*"
 TOXI_URL      ?= http://localhost:8474
+# S3-F9: Vitest JSON of the e2e suites, stamped (commit + source hash) into docs/generated/test-reports/<suite>.json
+# by tools/guarantee-check, which CI checks against the committed source. Stamped also when the suite fails.
+GCHECK        := node tools/guarantee-check/src/cli.ts
+REPORT_TMP    := $(CURDIR)/.run/test-reports
+json_report    = --reporter=default --reporter=json --outputFile.json=$(REPORT_TMP)/$(1).json
+stamp          = s=$$?; $(GCHECK) stamp $(1) $(REPORT_TMP)/$(1).json; exit $$s
 
 .PHONY: help
 help: ## List targets
@@ -108,15 +114,20 @@ consumer-start-pinned: ## Same, pinned with taskset to CONSUMER_CPUS (default 0,
 	$(SINK) start:pinned
 
 # --- Tests ---
-.PHONY: test test-e2e correctness crash-matrix test-all
+.PHONY: test test-e2e correctness crash-matrix test-all guarantees
 test: ## Unit tests of every package, service, tool and the correctness suite (no infrastructure)
 	pnpm --filter "./packages/*" build >/dev/null
 	pnpm $(UNIT_PACKAGES) --workspace-concurrency=1 test
-test-e2e: toxiproxy migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api (admin-api/relay: make correctness)
-	$(SINK) test:e2e
-	$(API) test:e2e
-correctness: toxiproxy migrate-test ## Correctness suite: replay, crash matrix (regenerates docs/generated/crash-matrix.*), retry, DLQ replay, outbox
-	$(CORRECTNESS) test:e2e
+test-e2e: toxiproxy migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api; writes their test reports
+	@mkdir -p $(REPORT_TMP)
+	$(SINK) test:e2e $(call json_report,consumer-sink-e2e); $(call stamp,consumer-sink-e2e)
+	$(API) test:e2e $(call json_report,ingest-api-e2e); $(call stamp,ingest-api-e2e)
+correctness: toxiproxy migrate-test ## Correctness suite (crash matrix, replay, retry, DLQ replay, outbox, time, G1/G4): regenerates the matrix + report
+	@mkdir -p $(REPORT_TMP)
+	$(CORRECTNESS) test:e2e $(call json_report,correctness); $(call stamp,correctness)
 crash-matrix: toxiproxy migrate-test ## Only the crash matrix; one point: make crash-matrix ONLY=consumer:after-db-commit
 	$(if $(ONLY),CRASH_MATRIX_ONLY=$(ONLY)) $(CORRECTNESS) crash-matrix
-test-all: test test-e2e correctness ## Everything above, in order
+test-all: test test-e2e correctness guarantees ## Everything above, in order
+guarantees: ## Every claim of docs/delivery-guarantees.md proved by a passing, current test; crash matrix complete (what CI runs)
+	pnpm --filter @eventpulse/fault-injector build >/dev/null
+	$(GCHECK) check

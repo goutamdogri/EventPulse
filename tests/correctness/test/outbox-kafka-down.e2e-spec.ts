@@ -29,7 +29,7 @@ async function restoreCluster(topic: string) {
 }
 
 describe('S3-F4 outbox relay with Kafka down', () => {
-  it('30 s outage while changes keep coming: backlog and oldest age grow, nothing lost, all published in order afterwards', async () => {
+  it('[G7.kafka-down] 30 s outage while changes keep coming: backlog and oldest age grow, nothing lost, all published in order afterwards', async () => {
     const lane = await OutboxLane.create();
     let stopped = false;
     try {

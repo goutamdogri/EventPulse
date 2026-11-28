@@ -1,0 +1,376 @@
+{
+  "suite": "correctness",
+  "generatedAt": "2026-11-28T06:26:10.431Z",
+  "commit": "e2895bc1",
+  "dirty": true,
+  "sourceHash": "1c5a97f274594accaa2086838e6b10551de6e953be376feaf8d1d1b46241a44e",
+  "success": true,
+  "numTotalTests": 73,
+  "tests": [
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] consumer:before-parse",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] consumer:after-parse",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] consumer:before-insert",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] consumer:after-insert-before-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] consumer:after-db-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] consumer:after-offset-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] api:before-produce",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] api:after-produce-before-complete",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] api:after-complete-before-response",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] retry:before-insert",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] retry:after-retry-publish-before-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] dlq:after-dlq-publish-before-meta",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] dlq:after-meta-before-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] replay:after-produce-before-mark",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] admin:after-update-before-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] relay:before-publish",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] relay:after-publish-before-mark",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/crash-matrix.e2e-spec.ts",
+      "title": "crash matrix [G2.crash-matrix] relay:after-mark-before-commit",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [setup] dead letters: 3 PERMANENT_DB with tenant and event id, 2 PERMANENT_PARSE without",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [stats/list/show] triage commands see the dead letters",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [G6.replay-filters] tenant, class, code, time and source offset range select only the matching rows",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [G6.replay-dry-run] the default: 0 records produced, dlq_meta unchanged, plan says 3 OK / 2 would fail",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [G6.replay-execute] --execute --yes: the 3 fixable events stored once, their rows marked, 2 poison skipped, textfile written",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [G3.replay-twice] the same replay again with --include-replayed: sink duplicates +3, stored rows unchanged",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [G6.replay-loop-guard] still-poison records go back to the DLQ with replay.count; after 3 rounds the guard skips them",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 DLQ replay tool (real sink + CLI) [G6.dlq-reindex] dlq_meta rows deleted: reindex restores them from the DLQ topic with the same source offsets",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/dlq-replay.e2e-spec.ts",
+      "title": "S3-F6 crash mid-replay (real sink + CLI) [G3.replay-crash] SIGKILL at replay:after-produce-before-mark, re-run the same command: all stored once, all marked",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.replay-api] the same N events sent 3 times with the same keys: N in Kafka, 2N stopped at the API, 0 at the sink",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.redelivered] API dedup off: the same N twice more reach Kafka (3N) and are counted at the sink as redelivered (2N)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.reprocessed] the log consumed again from the start: counted as reprocessed, not redelivered",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.conflict] same (tenant, event_id) with other content: counted as a conflict, stored row untouched",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.metrics-present] every catalogue series exists on /metrics of both services",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.audit-resend] audit with 20% resends: RECONCILED, resends stopped at the API (K), unexplained difference 0 (J)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/duplicates.e2e-spec.ts",
+      "title": "S3-F3 duplicates are counted at the layer that stopped them [G9.audit-redelivered] audit with resends and API dedup OFF: every extra copy is accounted for at the sink (J = 0)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/durability.e2e-spec.ts",
+      "title": "G1 durability [G1.durability] 300 events, a broker killed mid-run, then the API and the consumer SIGKILLed: every 202 is stored after restart",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/event-time.e2e-spec.ts",
+      "title": "S3-F8 late and out-of-order events (API -> Kafka -> sink) [G5.reorder-late] dataset D shuffled, 10% 1 min / 1 h / 24 h late, some sent seconds later: the table equals D exactly",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/event-time.e2e-spec.ts",
+      "title": "S3-F8 late and out-of-order events (API -> Kafka -> sink) [G5.retry-late] a record waits on a retry tier while NEWER events of the tenant are stored first: both stored, occurred_at correct, received_at the original",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/event-time.e2e-spec.ts",
+      "title": "S3-F8 late and out-of-order events (API -> Kafka -> sink) [G5.replay-late] DLQ replay of an old event: stored with its ORIGINAL received_at (it does not look new)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/event-time.e2e-spec.ts",
+      "title": "S3-F8 late and out-of-order events (API -> Kafka -> sink) [G5.skew] occurred_at 1 year + 1 day old -> 422 occurred_at_too_old, 10 min ahead -> 422 occurred_at_in_future, no zone -> 400; nothing produced",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/event-time.e2e-spec.ts",
+      "title": "S3-F8 late and out-of-order events (API -> Kafka -> sink) the sink measures lateness of what it stores (ep_sink_lateness_seconds)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/order-property.e2e-spec.ts",
+      "title": "S3-F8 property: order and lateness do not change what is stored [G5.property] BatchWriter, 1000 runs: stored set == first-wins reference; counts, min/max(occurred_at), duplicates and conflicts match",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/order-property.e2e-spec.ts",
+      "title": "S3-F8 property through the pipeline (API -> Kafka -> sink) [G5.property-pipeline] 20 runs: shuffled, late (0 s .. 24 h), resends mixed in, concurrent sends: stored == sent, received_at = server time",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/ordering.e2e-spec.ts",
+      "title": "G4 ordering [G4.per-key-order] two tenants interleaved, sequence numbers in the payload, read from the log: per key, one partition and offsets in sequence order",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox-kafka-down.e2e-spec.ts",
+      "title": "S3-F4 outbox relay with Kafka down [G7.kafka-down] 30 s outage while changes keep coming: backlog and oldest age grow, nothing lost, all published in order afterwards",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 admin-api: config change + outbox row in one transaction [G7.commit-published] PUT config: version + 1, exactly 1 outbox row, the relay publishes it, it decodes with the registered schema",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 admin-api: config change + outbox row in one transaction [G7.no-enqueue-on-reject] optimistic concurrency and validation: 412 stale If-Match, 404 unknown tenant, 400 bad body, 401 without the admin key; none of them enqueues",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 admin-api: config change + outbox row in one transaction [G7.rollback-error] rolled back (injected error after the outbox insert, before COMMIT): no config change, no outbox row, nothing published",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 admin-api: config change + outbox row in one transaction [G7.rollback-crash] crash at admin:after-update-before-commit: the process dies with the transaction open, nothing commits, nothing is published",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 outbox-relay: at least once, crash points [G7.relay-before-publish] crash at relay:before-publish: published after the restart, 0 lost, 0 duplicates sent",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 outbox-relay: at least once, crash points [G7.relay-after-publish] crash at relay:after-publish-before-mark: the batch is published twice, attempts = 2, the consumer applies each change once",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 outbox-relay: at least once, crash points [G7.relay-after-mark] crash at relay:after-mark-before-commit: the mark rolls back with the connection, the batch is republished",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 two relays [G7.single-leader] single-leader mode, 1000 ordered changes of one tenant: version order on the topic; the standby takes over when the leader is killed",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 two relays [G7.multi-mode] RELAY_MODE=multi, 1000 changes: order violations measured (not asserted), the consumer still ends on the latest version",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 two relays [G7.retention] graceful stop releases the lock at once and the backlog gauge reads 0 when drained; retention deletes old published rows",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 publish latency (commit -> published), LISTEN vs polling only [G7.latency] listen: 100 changes 20 ms apart, latency from the outbox row itself",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/outbox.e2e-spec.ts",
+      "title": "S3-F4 publish latency (commit -> published), LISTEN vs polling only [G7.latency] poll_200ms: 100 changes 20 ms apart, latency from the outbox row itself",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/replay.e2e-spec.ts",
+      "title": "S3-F2 replay safety (real process, real log) [G3.triple-replay] the same log consumed 3 times: storage unchanged, duplicates = 2N",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/replay.e2e-spec.ts",
+      "title": "S3-F2 replay safety (real process, real log) [G3.range-replay] replaying from the middle of every partition: storage unchanged, duplicates = replayed records",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/retry.e2e-spec.ts",
+      "title": "S3-F5 retry tiers and DLQ (real process) [G6.permanent] an unparseable record: one DLQ record + one dlq_meta row with full metadata, no retry traffic",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/retry.e2e-spec.ts",
+      "title": "S3-F5 retry tiers and DLQ (real process) [G6.transient-recovers] a row failing with 40001 on the main path is stored from tier 1 after its delay; the records behind it do not wait",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/retry.e2e-spec.ts",
+      "title": "S3-F5 retry tiers and DLQ (real process) [G6.never-recovers] a row that keeps failing: tiers 1, 2, 3, then the DLQ with attempts 3, origin = the source record",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/retry.e2e-spec.ts",
+      "title": "S3-F5 retry tiers and DLQ (real process) [G6.outage] Postgres unreachable for 15 s: the partition pauses; ZERO retry or DLQ records; everything stored after",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/retry.e2e-spec.ts",
+      "title": "S3-F5 retry tiers and DLQ (real process) [G6.rate-limit] more retriable rows than RETRY_MAX_RATE_PER_S: the partition is paused instead of flooding the tiers",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/retry.e2e-spec.ts",
+      "title": "S3-F5 retry tiers and DLQ (real process) [G6.poison-in-batch] 1 poison record among 500: 499 stored, 1 dead letter, no retry traffic for the good rows",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 compatibility rules (real registry, throw-away subjects) [G10.history] the whole events.raw-value history is accepted under FULL_TRANSITIVE",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 compatibility rules (real registry, throw-away subjects) [G10.fixtures] every incompatible fixture is rejected, the compatible one accepted; BACKWARD alone would let a field removal through",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 compatibility rules (real registry, throw-away subjects) throw-away subjects are removed again",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 compatibility rules (real registry, throw-away subjects) the newest local version is compatible with the REAL registered subject (what a deploy would register)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 pipeline: Avro on events.raw (API -> Kafka -> sink) [G10.avro-e2e] the API writes Avro with the registered id; the sink stores the same rows; old JSON records in the same topic too",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 pipeline: Avro on events.raw (API -> Kafka -> sink) [G10.unknown-id] a record with an unregistered schema id is dead-lettered (permanent), counted, and does not block the partition",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 pipeline: Avro on events.raw (API -> Kafka -> sink) [G10.registry-down-producer] registry down AFTER the API started: the API keeps answering 202 (cached id, no call)",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 pipeline: Avro on events.raw (API -> Kafka -> sink) [G10.registry-down-startup] registry down at API startup: /readyz 503 and requests 503 schema_unavailable; ready once it is back",
+      "status": "passed"
+    },
+    {
+      "file": "tests/correctness/test/schema.e2e-spec.ts",
+      "title": "S3-F7 pipeline: Avro on events.raw (API -> Kafka -> sink) [G10.registry-down-consumer] registry down for a FRESH sink (writer id not cached): partition paused, nothing dead-lettered, stored once it is back",
+      "status": "passed"
+    }
+  ]
+}

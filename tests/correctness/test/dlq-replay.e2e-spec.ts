@@ -56,7 +56,7 @@ describe('S3-F6 DLQ replay tool (real sink + CLI)', () => {
     expect(showPoison.json.record.precheck).toMatchObject({ ok: false, code: 'invalid_json' });
   });
 
-  it('[filters] tenant, class, code, time and source offset range select only the matching rows', async () => {
+  it('[G6.replay-filters] tenant, class, code, time and source offset range select only the matching rows', async () => {
     const rows = await lane.metaRows();
     const ids = (rs: any[]) => rs.map((r) => String(r.id)).sort();
     const list = async (...args: string[]) => ids((await runReplayCli(['list', '--dlq-topic', lane.dlq, '--json', ...args])).json);
@@ -75,7 +75,7 @@ describe('S3-F6 DLQ replay tool (real sink + CLI)', () => {
     expect(bad.code).toBe(2);
   });
 
-  it('[dry run] the default: 0 records produced, dlq_meta unchanged, plan says 3 OK / 2 would fail', async () => {
+  it('[G6.replay-dry-run] the default: 0 records produced, dlq_meta unchanged, plan says 3 OK / 2 would fail', async () => {
     const before = await metaSnapshot();
     const inSource = await logTotal(lane.source);
     const r = await replay([]);
@@ -88,7 +88,7 @@ describe('S3-F6 DLQ replay tool (real sink + CLI)', () => {
     expect(book.filters).toMatchObject({ dlqTopic: lane.dlq });
   });
 
-  it('[execute] --execute --yes: the 3 fixable events stored once, their rows marked, 2 poison skipped, textfile written', async () => {
+  it('[G6.replay-execute] --execute --yes: the 3 fixable events stored once, their rows marked, 2 poison skipped, textfile written', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dlq-replay-'));
     const textfile = join(dir, 'dlq_replay.prom');
     const r = await replay(['--execute', '--yes'], { DLQ_REPLAY_TEXTFILE: textfile });
@@ -116,7 +116,7 @@ describe('S3-F6 DLQ replay tool (real sink + CLI)', () => {
     expect(prom).toContain('ep_dlq_replay_skipped 2\n');
   });
 
-  it('[idempotent] the same replay again with --include-replayed: sink duplicates +3, stored rows unchanged', async () => {
+  it('[G3.replay-twice] the same replay again with --include-replayed: sink duplicates +3, stored rows unchanged', async () => {
     const before = await store.fingerprint(lane.tenant);
     const dup0 = (await sink.stats()).duplicates;
     const r = await replay(['--execute', '--yes', '--include-replayed']);
@@ -128,7 +128,7 @@ describe('S3-F6 DLQ replay tool (real sink + CLI)', () => {
     expect((await lane.metaRows()).filter((x) => x.error_class === 'PERMANENT_DB').map((x) => x.replay_count)).toEqual([2, 2, 2]);
   });
 
-  it('[include-failing + loop guard] still-poison records go back to the DLQ with replay.count; after 3 rounds the guard skips them', async () => {
+  it('[G6.replay-loop-guard] still-poison records go back to the DLQ with replay.count; after 3 rounds the guard skips them', async () => {
     const poisonRows = async () => (await lane.metaRows()).filter((x) => x.error_class === 'PERMANENT_PARSE');
     for (let round = 1; round <= 3; round++) {
       const r = await replay(['--execute', '--yes', '--include-failing', '--error-class', 'PERMANENT_PARSE']);
@@ -149,7 +149,7 @@ describe('S3-F6 DLQ replay tool (real sink + CLI)', () => {
     expect(await poisonRows()).toHaveLength(8);
   });
 
-  it('[reindex] dlq_meta rows deleted: reindex restores them from the DLQ topic with the same source offsets', async () => {
+  it('[G6.dlq-reindex] dlq_meta rows deleted: reindex restores them from the DLQ topic with the same source offsets', async () => {
     const key = (r: any) => `${r.source_topic}|${r.source_partition}|${r.source_offset}|${r.dlq_partition}|${r.dlq_offset}|${r.error_class}|${r.error_code}|${r.tenant_id}|${r.event_id}|${r.attempts}`;
     const before = (await lane.metaRows()).map(key).sort();
     await store.pool.query('delete from dlq_meta where dlq_topic = $1', [lane.dlq]);
@@ -172,7 +172,7 @@ describe('S3-F6 crash mid-replay (real sink + CLI)', () => {
     await store.end();
   });
 
-  it('[crash] SIGKILL at replay:after-produce-before-mark, re-run the same command: all stored once, all marked', async () => {
+  it('[G3.replay-crash] SIGKILL at replay:after-produce-before-mark, re-run the same command: all stored once, all marked', async () => {
     lane = await dlqLane(store);
     const { sink } = await lane.seed({ fixable: 4, poison: 0, good: 5 });
     const args = ['replay', '--dlq-topic', lane.dlq, '--json', '--rate', '0', '--execute', '--yes'];

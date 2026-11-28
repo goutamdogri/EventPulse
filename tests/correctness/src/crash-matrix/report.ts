@@ -33,6 +33,8 @@ export interface CrashResult {
 export interface CrashMatrix {
   generatedAt: string;
   commit: string;
+  /** sha256 of packages/fault-injector/src/points.ts at generation (tools/guarantee-check staleness check). */
+  pointsHash?: string;
   results: CrashResult[];
 }
 

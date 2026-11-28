@@ -1,0 +1,166 @@
+{
+  "suite": "consumer-sink-e2e",
+  "generatedAt": "2026-11-28T06:07:34.636Z",
+  "commit": "e2895bc1",
+  "dirty": true,
+  "sourceHash": "1c5a97f274594accaa2086838e6b10551de6e953be376feaf8d1d1b46241a44e",
+  "success": true,
+  "numTotalTests": 31,
+  "tests": [
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) inserts 100 rows in one statement",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) [G2.same-chunk-twice] writing the same chunk again inserts 0, reports every key as a duplicate, table unchanged",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) a duplicate inside one chunk is absorbed in the same statement (DO NOTHING, not DO UPDATE)",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) [G2.tenant-scope] the same event_id under two tenants is stored twice",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) [G2.conflict] same key, different content: first stored copy wins, the conflict is reported",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) a duplicate with the same content in another form (key order, offset time zone) is NOT a conflict",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) stores received_at from the header, payload as jsonb, content_hash, and stored_at after received_at",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) a failing chunk leaves nothing behind (transaction rolled back)",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) sink_offsets (same transaction as the rows) records the highest offset per partition and never moves it back (GREATEST)",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) sink_offsets (same transaction as the rows) is rolled back together with the rows when the chunk fails",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/batch-writer.e2e-spec.ts",
+      "title": "BatchWriter (real Postgres) sink_offsets (same transaction as the rows) is advanced even when every row was a duplicate (the offset WAS processed)",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/commit-protocol.e2e-spec.ts",
+      "title": "S2-F3 commit protocol (real process) crash after the DB commit, before the offset commit: no loss, duplicates bounded by one chunk",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/commit-protocol.e2e-spec.ts",
+      "title": "S2-F3 commit protocol (real process) crash at before_parse: no loss and no duplicate rows",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/commit-protocol.e2e-spec.ts",
+      "title": "S2-F3 commit protocol (real process) crash at after_parse: no loss and no duplicate rows",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/commit-protocol.e2e-spec.ts",
+      "title": "S2-F3 commit protocol (real process) committed offset = last processed offset + 1 (the next offset to read), exactly at the log end",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/commit-protocol.e2e-spec.ts",
+      "title": "S2-F3 commit protocol (real process) database unreachable: no offset advances while it is down; after it returns every row is stored",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/commit-protocol.e2e-spec.ts",
+      "title": "S2-F3 commit protocol (real process) SIGTERM under load: the current chunk finishes and commits, nothing is lost, nothing replayed",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/pipeline.e2e-spec.ts",
+      "title": "pipeline (real processes) POST 1000 events to the real API: all 1000 rows in Postgres within a bounded delay",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/pipeline.e2e-spec.ts",
+      "title": "pipeline (real processes) 3 members on a 2-partition topic: exactly 2 get a partition, the third is idle, and delivery works",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/pipeline.e2e-spec.ts",
+      "title": "pipeline (real processes) S2-F6 consumer metrics after a run: lag 0, inserted = new rows, freshness samples; a 2nd member -> rebalances",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) invalid-json in the middle of a busy partition: the partition drains, the record is in the DLQ",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) bad-uuid in the middle of a busy partition: the partition drains, the record is in the DLQ",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) oversized-field in the middle of a busy partition: the partition drains, the record is in the DLQ",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) constraint in the middle of a busy partition: the partition drains, the record is in the DLQ",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) Postgres unreachable for 20 s under load: zero records dead-lettered, everything stored after recovery",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) Postgres container STOPPED for 30 s under load (plan 4.4): zero dead letters, all rows after restart",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/poison.e2e-spec.ts",
+      "title": "S2-F4 poison messages (real process) SINK_DLQ_ENABLED=false reproduces the blocking: the poison partition stops, the others drain",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/sink-consumer.e2e-spec.ts",
+      "title": "consumer-sink: Kafka -> Postgres writes 1000 events (all 6 partitions) to Postgres within a bounded delay",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/sink-consumer.e2e-spec.ts",
+      "title": "consumer-sink: Kafka -> Postgres duplicate records: one row each, and the duplicates are counted",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/sink-consumer.e2e-spec.ts",
+      "title": "consumer-sink: Kafka -> Postgres a second member splits the partitions: none owned twice, all six owned",
+      "status": "passed"
+    },
+    {
+      "file": "services/consumer-sink/test/sink-consumer.e2e-spec.ts",
+      "title": "consumer-sink: Kafka -> Postgres restart resumes from committed offsets: events produced while down are written, nothing replayed",
+      "status": "passed"
+    }
+  ]
+}

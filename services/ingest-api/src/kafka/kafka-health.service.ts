@@ -69,15 +69,18 @@ export class KafkaHealthService implements OnModuleInit, OnApplicationShutdown {
       this.admin = admin;
     }
     const admin = this.admin;
+    const discard = () => {
+      if (this.admin !== admin) return;
+      this.admin = undefined;
+      void admin.disconnect().catch(() => undefined);
+    };
     return {
+      discard,
       fetchTopicMetadata: async (o) => {
         try {
           return (await admin.fetchTopicMetadata(o as any)) as any;
         } catch (e) {
-          if ((e as { code?: number })?.code === ERR__STATE) {
-            this.admin = undefined;
-            void admin.disconnect().catch(() => undefined);
-          }
+          if ((e as { code?: number })?.code === ERR__STATE) discard();
           throw e;
         }
       },

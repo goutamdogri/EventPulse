@@ -12,7 +12,7 @@ describe('S3-F4 admin-api: config change + outbox row in one transaction', () =>
     await lane.cleanup();
   });
 
-  it('PUT config: version + 1, exactly 1 outbox row, the relay publishes it, it decodes with the registered schema', async () => {
+  it('[G7.commit-published] PUT config: version + 1, exactly 1 outbox row, the relay publishes it, it decodes with the registered schema', async () => {
     const admin = lane.admin();
     const relay = lane.relay();
     await Promise.all([waitHttpReady(admin), waitHttpReady(relay)]);
@@ -49,7 +49,7 @@ describe('S3-F4 admin-api: config change + outbox row in one transaction', () =>
     await admin.stop();
   });
 
-  it('optimistic concurrency and validation: 412 stale If-Match, 404 unknown tenant, 400 bad body, 401 without the admin key; none of them enqueues', async () => {
+  it('[G7.no-enqueue-on-reject] optimistic concurrency and validation: 412 stale If-Match, 404 unknown tenant, 400 bad body, 401 without the admin key; none of them enqueues', async () => {
     const admin = lane.admin();
     await waitHttpReady(admin);
     const before = (await lane.counts()).rows;
@@ -72,7 +72,7 @@ describe('S3-F4 admin-api: config change + outbox row in one transaction', () =>
     await admin.stop();
   });
 
-  it('rolled back (injected error after the outbox insert, before COMMIT): no config change, no outbox row, nothing published', async () => {
+  it('[G7.rollback-error] rolled back (injected error after the outbox insert, before COMMIT): no config change, no outbox row, nothing published', async () => {
     const admin = lane.admin({ DEBUG_FAULTS: 'true', FAULT_ERRORS: 'admin:after-update-before-commit=XX000x1' });
     await waitHttpReady(admin);
     const before = await lane.configRow();
@@ -87,7 +87,7 @@ describe('S3-F4 admin-api: config change + outbox row in one transaction', () =>
     await admin.stop();
   });
 
-  it('crash at admin:after-update-before-commit: the process dies with the transaction open, nothing commits, nothing is published', async () => {
+  it('[G7.rollback-crash] crash at admin:after-update-before-commit: the process dies with the transaction open, nothing commits, nothing is published', async () => {
     const relay = lane.relay();
     await waitHttpReady(relay);
     const published = async () => (await lane.counts()).published;
@@ -113,7 +113,7 @@ describe('S3-F4 admin-api: config change + outbox row in one transaction', () =>
 });
 
 describe('S3-F4 outbox-relay: at least once, crash points', () => {
-  it('crash at relay:before-publish: published after the restart, 0 lost, 0 duplicates sent', async () => {
+  it('[G7.relay-before-publish] crash at relay:before-publish: published after the restart, 0 lost, 0 duplicates sent', async () => {
     const lane = await OutboxLane.create();
     try {
       await lane.writeChanges(120);
@@ -136,7 +136,7 @@ describe('S3-F4 outbox-relay: at least once, crash points', () => {
     }
   });
 
-  it('crash at relay:after-publish-before-mark: the batch is published twice, attempts = 2, the consumer applies each change once', async () => {
+  it('[G7.relay-after-publish] crash at relay:after-publish-before-mark: the batch is published twice, attempts = 2, the consumer applies each change once', async () => {
     const lane = await OutboxLane.create();
     try {
       await lane.writeChanges(30);
@@ -159,7 +159,7 @@ describe('S3-F4 outbox-relay: at least once, crash points', () => {
     }
   });
 
-  it('crash at relay:after-mark-before-commit: the mark rolls back with the connection, the batch is republished', async () => {
+  it('[G7.relay-after-mark] crash at relay:after-mark-before-commit: the mark rolls back with the connection, the batch is republished', async () => {
     const lane = await OutboxLane.create();
     try {
       await lane.writeChanges(30);
@@ -180,7 +180,7 @@ describe('S3-F4 outbox-relay: at least once, crash points', () => {
 describe('S3-F4 two relays', () => {
   const N = 1000;
 
-  it(`single-leader mode, ${N} ordered changes of one tenant: version order on the topic; the standby takes over when the leader is killed`, async () => {
+  it(`[G7.single-leader] single-leader mode, ${N} ordered changes of one tenant: version order on the topic; the standby takes over when the leader is killed`, async () => {
     const lane = await OutboxLane.create();
     try {
       const a = lane.relay({ RELAY_BATCH_SIZE: '20' });
@@ -211,7 +211,7 @@ describe('S3-F4 two relays', () => {
     }
   });
 
-  it(`RELAY_MODE=multi, ${N} changes: order violations measured (not asserted), the consumer still ends on the latest version`, async () => {
+  it(`[G7.multi-mode] RELAY_MODE=multi, ${N} changes: order violations measured (not asserted), the consumer still ends on the latest version`, async () => {
     const lane = await OutboxLane.create();
     try {
       await lane.writeChanges(N);
@@ -232,7 +232,7 @@ describe('S3-F4 two relays', () => {
     }
   });
 
-  it('graceful stop releases the lock at once and the backlog gauge reads 0 when drained; retention deletes old published rows', async () => {
+  it('[G7.retention] graceful stop releases the lock at once and the backlog gauge reads 0 when drained; retention deletes old published rows', async () => {
     const lane = await OutboxLane.create();
     try {
       await lane.writeChanges(20);
@@ -260,7 +260,7 @@ describe('S3-F4 publish latency (commit -> published), LISTEN vs polling only', 
   it.each([
     ['listen', { RELAY_LISTEN: 'true', RELAY_POLL_MS: '200' }],
     ['poll_200ms', { RELAY_LISTEN: 'false', RELAY_POLL_MS: '200' }],
-  ] as const)('%s: 100 changes 20 ms apart, latency from the outbox row itself', async (name, env) => {
+  ] as const)('[G7.latency] %s: 100 changes 20 ms apart, latency from the outbox row itself', async (name, env) => {
     const lane = await OutboxLane.create();
     try {
       const relay = lane.relay(env);

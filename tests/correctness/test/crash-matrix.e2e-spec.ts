@@ -2,7 +2,8 @@
 // For every registered crash point: SIGKILL there, restart without the fault, drain, audit. Writes
 // docs/generated/crash-matrix.json and .md, then asserts the guarantees row by row.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CRASH_POINTS } from '@eventpulse/fault-injector';
 import { StoreProbe } from '../src/harness.js';
@@ -106,7 +107,9 @@ describe('crash matrix', () => {
     } catch {
       /* not a git checkout */
     }
-    const matrix = { generatedAt: new Date().toISOString(), commit, results };
+    // pointsHash: tools/guarantee-check fails when points.ts changed after this matrix was generated (stale).
+    const pointsHash = createHash('sha256').update(readFileSync(resolve(import.meta.dirname, '../../../packages/fault-injector/src/points.ts'))).digest('hex');
+    const matrix = { generatedAt: new Date().toISOString(), commit, pointsHash, results };
     mkdirSync(OUT, { recursive: true });
     writeFileSync(resolve(OUT, 'crash-matrix.json'), `${JSON.stringify(matrix, null, 2)}\n`);
     writeFileSync(resolve(OUT, 'crash-matrix.md'), renderMarkdown(matrix));
