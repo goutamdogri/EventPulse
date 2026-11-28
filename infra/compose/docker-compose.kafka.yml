@@ -113,6 +113,8 @@ services:
       EVENTS_RAW_PARTITIONS: ${EVENTS_RAW_PARTITIONS:-6}
       EVENTS_RAW_RETENTION_MS: ${EVENTS_RAW_RETENTION_MS:-86400000}   # 24 h
       EVENTS_DLQ_RETENTION_MS: ${EVENTS_DLQ_RETENTION_MS:-604800000}  # 7 days
+      # Stage 3 (S3-F5): retry tiers keep records at least 10x the longest tier delay (10 min) -> 7 days.
+      EVENTS_RETRY_RETENTION_MS: ${EVENTS_RETRY_RETENTION_MS:-604800000}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -124,8 +126,51 @@ services:
         $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic events.dlq \
           --partitions 3 --replication-factor 3 \
           --config min.insync.replicas=2 --config retention.ms="$$EVENTS_DLQ_RETENTION_MS"
+        for tier in 1 2 3; do
+          $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic events.retry.$$tier \
+            --partitions "$$EVENTS_RAW_PARTITIONS" --replication-factor 3 \
+            --config min.insync.replicas=2 --config retention.ms="$$EVENTS_RETRY_RETENTION_MS"
+        done
+        # Stage 3 (S3-F4): tenant config change events from the outbox (key = tenant). Every message is a FULL config
+        # snapshot, so compaction (latest per tenant) loses nothing and lets a new consumer bootstrap from the topic.
+        $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic config.changed \
+          --partitions 3 --replication-factor 3 \
+          --config min.insync.replicas=2 --config cleanup.policy=compact
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.raw
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.dlq
+
+  # Stage 3 (S3-F7): Confluent Schema Registry. Subjects, versions and ids live in the _schemas topic (RF 3, compacted),
+  # so the registry itself is stateless and can be restarted. Clients on the host use localhost:8081; through
+  # Toxiproxy (proxy "registry", `make toxiproxy`) localhost:18081. Schemas are registered by `make schemas`
+  # (tools/schema-check), never by the services at runtime.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.1.1
+    container_name: ep-schema-registry
+    hostname: schema-registry
+    cpuset: "5,11"                       # the monitoring cores
+    cpus: 1
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on:
+      kafka1: { condition: service_healthy }
+      kafka2: { condition: service_healthy }
+      kafka3: { condition: service_healthy }
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka1:19092,PLAINTEXT://kafka2:19092,PLAINTEXT://kafka3:19092
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: _schemas
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 3
+      # The default for subjects without their own setting. events.raw-value sets FULL_TRANSITIVE (schemas/subjects.json).
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: full_transitive
+      SCHEMA_REGISTRY_HEAP_OPTS: -Xms256m -Xmx512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf localhost:8081/subjects > /dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
 
   # K4: Kafka metrics for Prometheus (leader and ISR per partition, brokers seen, offsets). The Kafka brokers expose no
   # Prometheus metrics themselves. It talks to all three brokers on the internal listener, so when one is killed it can
@@ -142,7 +187,7 @@ services:
       - --kafka.server=kafka2:19092
       - --kafka.server=kafka3:19092
       - --refresh.metadata=2s            # default 30 s is too slow to see a leader change
-      - --topic.filter=^(k4-.*|events\..*)$
+      - --topic.filter=^(k4-.*|events\..*)$                # includes events.retry.N
       - --group.filter=.*
 
 volumes:

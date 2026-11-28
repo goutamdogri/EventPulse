@@ -21,5 +21,9 @@ dist/
 
 # cache
 __pycache__/
-# Stage 2 pipeline: pid files and logs of the processes started by scripts/stage2-up.sh
+# pipeline: pid files and logs of the processes started by make up (scripts/up.sh)
 .run/
+
+# node-exporter textfile metrics written at runtime (tools/dlq-replay, scripts/listen-queue-exporter.sh)
+infra/compose/textfile/*.prom
+infra/compose/textfile/*.tmp

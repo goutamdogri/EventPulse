@@ -22,6 +22,14 @@ export interface PartitionMeta {
 
 export interface HealthAdmin {
   fetchTopicMetadata(o: { topics: string[]; timeout?: number }): Promise<{ partitions: PartitionMeta[] }[]>;
+  /**
+   * Throw this admin client away: the next check builds a fresh one. Called after EVERY failed check (S3-F9 fix):
+   * when a broker is killed abruptly (docker kill, a crashed host) its TCP connection is not reset, and an admin
+   * client that sent its metadata request there keeps timing out on that connection long after the cluster has
+   * failed over. The check then forced the breaker open forever and the API answered 503 although 2 of 3 brokers
+   * were fine (found by [G1.durability]). A fresh client bootstraps again and asks a live broker.
+   */
+  discard?(): void;
 }
 
 export interface HealthResult {
@@ -61,12 +69,14 @@ export class KafkaHealthChecker {
   /** One check. Never throws. */
   async check(): Promise<HealthResult> {
     let r: { ok: boolean; reason: string };
+    let admin: HealthAdmin | undefined;
     try {
-      const admin = await this.getAdmin();
+      admin = await this.getAdmin();
       const md = await withTimeout(admin.fetchTopicMetadata({ topics: [this.opts.topic], timeout: this.opts.timeoutMs }), this.opts.timeoutMs);
       r = evaluateMetadata(md, this.opts.minIsr);
     } catch (e) {
       r = { ok: false, reason: `metadata request failed: ${String((e as Error)?.message ?? e).slice(0, 200)}` };
+      admin?.discard?.(); // no answer at all: the client itself may be stuck on a dead broker's connection
     }
     const wasOk = this.last?.ok ?? false;
     this.last = { ...r, at: this.now() };

@@ -1,0 +1,32 @@
+{
+  "name": "@eventpulse/outbox",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Transactional outbox (Stage 3, S3-F4): enqueue in the caller's transaction, a polling relay (at least once, single leader by default), config.changed events and applyIfNewer for consumers.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@eventpulse/fault-injector": "workspace:*",
+    "@eventpulse/retry": "workspace:*",
+    "@eventpulse/schema": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

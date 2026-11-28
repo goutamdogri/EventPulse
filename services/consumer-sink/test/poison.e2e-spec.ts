@@ -84,7 +84,9 @@ describe('S2-F4 poison messages (real process)', () => {
       'dlq.original_offset': '1000', // exactly the poison record: 1000 good ones came before it
       request_id: `poison-${kind}`, // original headers kept
     });
-    expect(d.headers['dlq.attempts']).toBe(errorClass === 'PERMANENT_DB' ? '4' : '1');
+    // Stage 3: attempts counts retry-tier attempts (0 for a parse error); with tiers off a bad row is still retried
+    // in-process SINK_MAX_RETRIES (3) times, recorded as 1 + 3 (the Stage 2 meaning).
+    expect(d.headers['dlq.attempts']).toBe(errorClass === 'PERMANENT_DB' ? '4' : '0');
     if (kind === 'invalid-json') expect(d.value!.toString()).toContain('broken json'); // original bytes
     const st = await sink.stats();
     expect(st.dlq).toBe(1);
@@ -111,7 +113,7 @@ describe('S2-F4 poison messages (real process)', () => {
       await sleep(20_000);
       const st = await sink.stats();
       expect(st.dlq).toBe(0);
-      expect(st.errors_by_class.TRANSIENT_DB).toBeGreaterThan(0);
+      expect(st.errors_by_class.TRANSIENT_SYSTEMIC).toBeGreaterThan(0);
       expect(st.pauses).toBeGreaterThan(0); // paused, not a hot retry loop
       expect(await db.countRows(ids)).toBe(0);
     } finally {
@@ -144,7 +146,7 @@ describe('S2-F4 poison messages (real process)', () => {
       await sleep(30_000);
       const st = await sink.stats();
       expect(st.dlq).toBe(0); // the DB being down is never the record's fault
-      expect(st.errors_by_class.TRANSIENT_DB).toBeGreaterThan(0);
+      expect(st.errors_by_class.TRANSIENT_SYSTEMIC).toBeGreaterThan(0);
       expect(st.pauses).toBeGreaterThan(0);
     } finally {
       await dockerPg('start');

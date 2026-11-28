@@ -1,0 +1,57 @@
+# EventPulse CI. Stage 3: unit tests of every workspace project, the schema compatibility policy (S3-F7: an
+# incompatible change to schemas/ fails the build), and the delivery guarantees (S3-F9: every claim of
+# docs/delivery-guarantees.md proved by a passing test). Infrastructure-heavy e2e suites run locally (make test-e2e,
+# make correctness) and their stamped reports are committed; job `guarantees` fails when they do not match the code.
+name: ci
+
+on:
+  # push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: make test
+
+  schema-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @eventpulse/schema build
+      - name: Start an empty Schema Registry
+        run: docker compose -f tools/schema-check/docker-compose.ci.yml up -d --wait
+      - name: Whole history of every subject under its compatibility level
+        run: node tools/schema-check/src/cli.ts check
+      - name: Policy fixtures (incompatible rejected, compatible accepted)
+        run: node tools/schema-check/src/cli.ts fixtures
+      - name: Registry logs on failure
+        if: failure()
+        run: docker compose -f tools/schema-check/docker-compose.ci.yml logs schema-registry | tail -100
+
+  guarantees:
+    needs: [unit, schema-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Every claim proved by a passing, current test; crash matrix complete and loss-free
+        run: make guarantees

@@ -18,9 +18,11 @@ import { PG_POOL } from '../db/db.module.js';
 import { LagMonitor } from '../observability/lag.js';
 import { SinkStats } from '../observability/sink-stats.js';
 import { BatchWriter } from '../sink/batch-writer.js';
-import { DlqPublisher } from '../sink/dlq-publisher.js';
+import { PartitionProgress } from '../sink/progress.js';
+import { SinkPipeline } from './pipeline.js';
+import { FaultInjector, describeCrash, describeError } from '@eventpulse/fault-injector';
 import { handleBatch } from './batch-handler.js';
-import { FaultInjector } from './fault-injector.js';
+import { FAULT_INJECTOR } from './faults.controller.js';
 
 const ASSIGNORS = {
   roundRobin: KafkaJS.PartitionAssigners.roundRobin,
@@ -43,9 +45,10 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   private readonly log = new Logger(SinkConsumer.name);
   private readonly consumer: Consumer;
   private readonly writer: BatchWriter;
-  private readonly faults: FaultInjector;
-  private readonly dlq: DlqPublisher;
   private readonly lag: LagMonitor;
+  /** S3-F3: highest stored offset per partition (sink_offsets), to split duplicates by cause. */
+  private readonly progress?: PartitionProgress;
+
   private readonly resumeTimers = new Set<NodeJS.Timeout>();
   private assignedOnce!: Promise<void>;
   /** K8: only some chunks get SINK_PROCESSING_DELAY_MS (shared by every eachBatch call of this member). */
@@ -57,19 +60,34 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     @Inject(CONFIG) private readonly cfg: AppConfig,
     @Inject(PG_POOL) pool: Pool,
     readonly stats: SinkStats,
+    @Inject(FAULT_INJECTOR) private readonly faults: FaultInjector,
+    private readonly pipeline: SinkPipeline,
   ) {
-    this.writer = new BatchWriter(pool, { dedup: cfg.sink.dedup, table: cfg.sink.dedupTable });
-    this.faults = new FaultInjector(cfg.faults);
+    this.writer = new BatchWriter(pool, {
+      dedup: cfg.sink.dedup,
+      table: cfg.sink.dedupTable,
+      track: { group: cfg.consumer.groupId, topic: cfg.consumer.topic },
+      faults,
+      onConflictCheckError: (e) => this.log.warn(`conflict check failed (rows are stored): ${(e as Error).message}`),
+    });
+    if (cfg.sink.dedup) {
+      this.progress = new PartitionProgress(pool, cfg.consumer.groupId, cfg.consumer.topic, (e) =>
+        this.log.warn(`sink_offsets lookup failed (duplicates of this chunk counted as cause=unknown): ${(e as Error).message}`),
+      );
+    }
+    if (!cfg.schema.acceptJson) this.log.warn('SINK_ACCEPT_JSON=false: Stage 2 JSON values are dead-lettered (json_not_accepted)');
     this.lag = new LagMonitor(cfg.kafka, cfg.consumer.groupId, cfg.consumer.topic, cfg.lagPollMs, stats);
-    this.dlq = new DlqPublisher(cfg.kafka, cfg.retry.dlqTopic, { sourceTopic: cfg.consumer.topic, groupId: cfg.consumer.groupId });
     if (!cfg.retry.dlqEnabled) {
       this.log.warn('SINK_DLQ_ENABLED=false: a poison record will block its partition (S2-F3 behavior)');
     }
     if (!cfg.sink.dedup) {
       this.log.warn(`DEBUG: SINK_DEDUP=false, plain INSERT into ${cfg.sink.dedupTable} (no ON CONFLICT): reprocessed rows are stored twice`);
     }
-    if (cfg.faults.crashAt !== 'none') {
-      this.log.warn(`DEBUG FAULT ARMED: SIGKILL at ${cfg.faults.crashAt} on batch ${cfg.faults.crashAfterBatches}`);
+    if (cfg.faults.crashes.length > 0 || cfg.faults.errors.length > 0) {
+      const armed = [...cfg.faults.crashes.map(describeCrash), ...cfg.faults.errors.map(describeError)].join(', ');
+      this.log.warn(`DEBUG FAULTS ARMED: ${armed}`);
+    } else if (cfg.faults.enabled) {
+      this.log.warn('DEBUG_FAULTS=true: faults can be armed at runtime through POST /debug/faults');
     }
     if (cfg.sink.delayChunks > 0) this.delayWindow = { skip: cfg.sink.delaySkipChunks, left: cfg.sink.delayChunks };
     this.assignedOnce = new Promise((r) => (this.markAssigned = r));
@@ -95,7 +113,10 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
   }
 
   async onApplicationBootstrap() {
-    await this.dlq.connect();
+    if (this.cfg.role === 'retry') {
+      this.log.log('SINK_ROLE=retry: the main consumer of events.raw is not started');
+      return;
+    }
     await this.consumer.connect();
     await this.consumer.subscribe({ topics: [this.cfg.consumer.topic] });
     await this.consumer.run({
@@ -132,8 +153,21 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
               faults: this.faults,
               processingDelayMs: this.cfg.sink.processingDelayMs,
               delayWindow: this.delayWindow,
-              dlq: this.dlq,
+              dlq: this.pipeline.dlq,
+              dlqMeta: this.pipeline.dlqMeta,
               retry: this.cfg.retry,
+              progress: this.progress,
+              schema: { serde: this.pipeline.serde, acceptJson: this.cfg.schema.acceptJson },
+              classifier: this.pipeline.classifier,
+              sourceTopic: this.cfg.consumer.topic,
+              ...(this.pipeline.tiersEnabled
+                ? {
+                    tiers: { policy: this.pipeline.policy, inProcessAttempts: this.cfg.retryTiers.inProcessAttempts },
+                    retryOut: this.pipeline.retryOut,
+                    limiter: this.pipeline.limiter,
+                  }
+                : {}),
+              log: (line) => this.log.log(line),
             },
           );
         } catch (e) {
@@ -146,6 +180,10 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     this.running = true;
     this.lag.start();
     this.log.log(`joined group ${this.cfg.consumer.groupId}, subscribed to ${this.cfg.consumer.topic}`);
+  }
+
+  get mainEnabled() {
+    return this.cfg.role !== 'retry';
   }
 
   /** Resolves when this member received its first partition assignment (used by tests). */
@@ -164,7 +202,6 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
     for (const t of this.resumeTimers) clearTimeout(t);
     this.resumeTimers.clear();
     await this.consumer.disconnect();
-    await this.dlq.disconnect();
     await this.lag.stop();
     this.log.log('left the group');
   }
@@ -195,6 +232,8 @@ export class SinkConsumer implements OnApplicationBootstrap, BeforeApplicationSh
 
   private onRebalance(err: { code: number }, assignment: TopicPartition[]) {
     const parts = assignment.map((tp) => `${tp.topic}:${tp.partition}`);
+    // Another member may have advanced these partitions: re-read sink_offsets before classifying duplicates again.
+    this.progress?.forget(assignment.map((tp) => tp.partition));
     if (err.code === RdKafkaErrors.ERR__ASSIGN_PARTITIONS) {
       this.stats.countRebalance();
       this.stats.closeRebalanceGap();

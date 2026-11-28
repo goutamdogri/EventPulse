@@ -6,31 +6,50 @@
 //
 //   for each chunk of the batch (SINK_MAX_ROWS messages):
 //       stop if the consumer is shutting down or the partition was revoked (rebalance)
-//       parse every record                        crash points: before_parse, after_parse
+//       parse every record                        crash points: consumer:before-parse, consumer:after-parse
 //         unparseable -> dead letter (PERMANENT_PARSE), no retry
-//       write the good rows: BEGIN; INSERT ...; COMMIT
-//         TRANSIENT/SYSTEMIC DB error -> backoff + retry inside the window; then pause the partition and throw
-//                                        (nothing resolved: the chunk is read again after the pause)
-//         PERMANENT/UNKNOWN DB error  -> isolate by bisection; good rows are written, each bad row is retried
-//                                        SINK_MAX_RETRIES times, then becomes a dead letter (PERMANENT_DB)
-//                                        crash point: after_db_commit
-//       publish dead letters to the DLQ and wait for the ack (failure -> throw, nothing resolved)
+//       write the good rows: BEGIN; INSERT ...; sink_offsets; COMMIT   (S3-F2, idempotent on (tenant_id, event_id))
+//                                        crash points: consumer:before-insert, consumer:after-insert-before-commit
+//         blocking class (TRANSIENT_SYSTEMIC, SYSTEMIC_CONFIG: a dependency is down)
+//                                     -> backoff + retry inside the window; then pause the partition and throw
+//                                        (nothing resolved: the chunk is read again after the pause). NEVER a
+//                                        retry topic, NEVER the DLQ.
+//         TRANSIENT_RECORD (deadlock, serialization failure, statement timeout) for the whole chunk
+//                                     -> the chunk is retried in-process RETRY_INPROCESS_ATTEMPTS times first
+//                                        (usually enough), then isolated like below
+//         row-level class             -> isolate by bisection; good rows are written; a row failing ON ITS OWN:
+//                                          PERMANENT_DB                -> dead letter (retrying bad data never helps)
+//                                          TRANSIENT_RECORD / UNKNOWN  -> retry tier 1 (S3-F5, not_before header)
+//                                        crash point: consumer:after-db-commit
+//       settle (settle.ts): retry records -> tier topic (rate-limited), dead letters -> events.dlq + dlq_meta,
+//                                        each acked before the source offset moves (failure -> throw, nothing resolved)
+//       With retry tiers off (RETRY_TOPICS_ENABLED=false) the Stage 2 behavior returns: TRANSIENT_RECORD blocks, and a
+//       bad row is retried in-process SINK_MAX_RETRIES times before it is dead-lettered.
 //       stop if the partition was revoked meanwhile
 //       resolveOffset(last offset of the chunk) + commit offsets to Kafka (a failed commit is retried
 //                                        COMMIT_RETRIES times; the rows are stored, so a retry is always safe)
+//                                        crash point: consumer:after-offset-commit
 //
 // This is the ONLY place that resolves or commits offsets in this service.
 // With SINK_DLQ_ENABLED=false the old S2-F2/F3 behavior returns: a poison record throws and blocks its partition.
 
 import type { ChunkFailure, SinkStats } from '../observability/sink-stats.js';
-import type { BatchWriter, WriteResult } from '../sink/batch-writer.js';
+import type { BatchWriter, DuplicateRow, WriteResult } from '../sink/batch-writer.js';
+import { reprocessedMessages, splitByCause } from '../sink/progress.js';
+import type { ProgressSource } from '../sink/progress.js';
 import { chunk } from '../sink/batch-writer.js';
-import type { DeadLetter, DlqSink } from '../sink/dlq-publisher.js';
-import { backoffMs, classifyDbError, errorCode, isBlocking } from '../sink/errors.js';
-import type { ErrorClass } from '../sink/errors.js';
-import { parseMessage } from '../sink/parse.js';
+import type { DeadLetter, DlqRecorder, DlqSink } from '../sink/dlq-publisher.js';
+import { DEFAULT_CLASSIFIER, backoffMs, classifyParseCode, errorCode, isBlocking, route } from '@eventpulse/retry';
+import type { Classifier, ErrorClass, TierPolicy, TokenBucket } from '@eventpulse/retry';
+import type { RetryLetter, RetrySink } from '../retry/retry-publisher.js';
+import { DlqMetaError, DlqPublishError, RetryPublishError, RetryRateLimitedError, settle } from './settle.js';
+
+export { DlqMetaError, DlqPublishError, RetryPublishError, RetryRateLimitedError } from './settle.js';
+import { DESERIALIZE_CODES, parseMessage } from '../sink/parse.js';
+import { RegistryUnavailableError } from '@eventpulse/schema';
+import type { EventSerde } from '@eventpulse/schema';
 import type { EventRow, ParseError, RawMessage } from '../sink/parse.js';
-import type { FaultInjector } from './fault-injector.js';
+import type { FaultInjector } from '@eventpulse/fault-injector';
 
 export class PoisonBatchError extends Error {
   readonly name = 'PoisonBatchError';
@@ -56,10 +75,11 @@ export class DbUnavailableError extends Error {
   }
 }
 
-export class DlqPublishError extends Error {
-  readonly name = 'DlqPublishError';
-  constructor(readonly cause: unknown) {
-    super(`DLQ publish failed; source offset not committed, chunk will be retried: ${String((cause as Error)?.message ?? cause)}`);
+/** S3-F7: the schema registry could not be asked for a writer schema: pause and retry, NEVER dead-letter. */
+export class RegistryUnavailableChunkError extends Error {
+  readonly name = 'RegistryUnavailableChunkError';
+  constructor(readonly cause: unknown, pausedMs: number) {
+    super(`schema registry unavailable (partition paused for ${pausedMs} ms, chunk will be retried): ${String((cause as Error)?.message ?? cause)}`);
   }
 }
 
@@ -101,7 +121,33 @@ export interface HandlerDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   rand?: () => number;
+  /** S3-F3: highest stored offset per partition, to split duplicates into reprocessed / redelivered. */
+  progress?: ProgressSource;
+  /** One structured line per chunk that had duplicates or conflicts (never one per row). */
+  log?: (line: string) => void;
+  /** S3-F7: Avro decoding (writer schemas fetched per chunk) and whether Stage 2 JSON values are still accepted. */
+  schema?: { serde: EventSerde; acceptJson: boolean };
+  /** S3-F5: the one classifier (CLASSIFIER_OVERRIDE applied); default packages/retry's. */
+  classifier?: Pick<Classifier, 'classify'>;
+  /** S3-F5: retry tiers. Absent = RETRY_TOPICS_ENABLED=false (Stage 2 in-process retries). */
+  tiers?: { policy: TierPolicy; inProcessAttempts: number };
+  retryOut?: RetrySink;
+  limiter?: Pick<TokenBucket, 'tryTake'>;
+  dlqMeta?: DlqRecorder;
+  /** Topic of the records (the origin written into retry and DLQ headers). */
+  sourceTopic?: string;
 }
+
+interface RetryCandidate {
+  raw: RawMessage;
+  row: EventRow;
+  errorClass: ErrorClass;
+  error: unknown;
+}
+
+const classifierOf = (deps: HandlerDeps) => deps.classifier ?? DEFAULT_CLASSIFIER;
+/** With tiers off, TRANSIENT_RECORD blocks the partition like an outage (the Stage 2 behavior). */
+const blockingHere = (cls: ErrorClass, deps: HandlerDeps) => isBlocking(cls) || (!deps.tiers && cls === 'TRANSIENT_RECORD');
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -109,14 +155,28 @@ interface WriteOutcome {
   attempted: number;
   inserted: number;
   dead: DeadLetter[];
+  retry: RetryCandidate[];
+  dups: DuplicateRow[];
+  conflicts: number;
 }
 
 const add = (a: WriteOutcome, b: WriteOutcome): WriteOutcome => ({
   attempted: a.attempted + b.attempted,
   inserted: a.inserted + b.inserted,
   dead: [...a.dead, ...b.dead],
+  retry: [...a.retry, ...b.retry],
+  dups: [...a.dups, ...b.dups],
+  conflicts: a.conflicts + b.conflicts,
 });
-const fromWrite = (w: WriteResult): WriteOutcome => ({ attempted: w.attempted, inserted: w.inserted, dead: [] });
+const fromWrite = (w: WriteResult): WriteOutcome => ({
+  attempted: w.attempted,
+  inserted: w.inserted,
+  dead: [],
+  retry: [],
+  dups: w.duplicateKeys ?? [],
+  conflicts: w.conflicts?.length ?? 0,
+});
+const NOTHING: WriteOutcome = { attempted: 0, inserted: 0, dead: [], retry: [], dups: [], conflicts: 0 };
 
 export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise<void> {
   if (ctx.messages.length === 0) return;
@@ -129,7 +189,9 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
     writer: {
       writeChunk: async (rows) => {
         const w = await deps.writer.writeChunk(rows);
-        stats.observeDbWrite(w.durationMs, w.connectMs ?? 0, w.freshnessS ?? []);
+        stats.observeDbWrite(w.durationMs, w.connectMs ?? 0, w.freshnessS ?? [], w.latenessS ?? []);
+        if (w.conflicts?.length) stats.countConflicts(w.conflicts);
+        if (w.conflictCheckFailed) stats.conflictCheckErrors++;
         return w;
       },
     },
@@ -156,7 +218,11 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
 function failureReason(e: unknown, dlqEnabled: boolean): ChunkFailure {
   if (e instanceof PoisonBatchError) return 'poison_blocked';
   if (e instanceof DbUnavailableError) return 'db_unavailable';
+  if (e instanceof RegistryUnavailableChunkError) return 'registry_unavailable';
   if (e instanceof DlqPublishError) return 'dlq_publish';
+  if (e instanceof DlqMetaError) return e.blocking ? 'db_unavailable' : 'dlq_publish';
+  if (e instanceof RetryRateLimitedError) return 'retry_rate_limited';
+  if (e instanceof RetryPublishError) return 'retry_publish';
   if (e instanceof OffsetCommitError) return 'commit';
   return dlqEnabled ? 'other' : 'poison_blocked'; // DLQ off: a row Postgres rejects blocks the partition
 }
@@ -164,19 +230,37 @@ function failureReason(e: unknown, dlqEnabled: boolean): ChunkFailure {
 /** One chunk: parse, write, dead-letter, commit. Returns false if the partition was revoked meanwhile. */
 async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerDeps): Promise<boolean> {
   const { stats, faults } = deps;
-  faults.hit('before_parse', part.length);
+  faults.hit('consumer:before-parse', { rows: part.length });
   const good: { raw: RawMessage; row: EventRow }[] = [];
   const parseErrors: { raw: RawMessage; error: ParseError }[] = [];
+  if (deps.schema) {
+    // Fetch the writer schema of every Avro record of the chunk that this process has not seen yet (once per id).
+    try {
+      await deps.schema.serde.prefetch(part.map((m) => m.value));
+    } catch (e) {
+      if (!(e instanceof RegistryUnavailableError)) throw e;
+      stats.registryUnavailable++;
+      ctx.pausePartition(deps.retry.pauseMs);
+      stats.pauses++;
+      throw new RegistryUnavailableChunkError(e, deps.retry.pauseMs);
+    }
+  }
+  const parseOpts = { serde: deps.schema?.serde, acceptJson: deps.schema?.acceptJson ?? true };
   for (const m of part) {
-    const r = parseMessage(m);
-    if (r.ok) good.push({ raw: m, row: r.row });
-    else parseErrors.push({ raw: m, error: r.error });
+    const r = parseMessage(m, parseOpts);
+    if (r.ok) {
+      good.push({ raw: m, row: r.row });
+      if (r.row.schema_id !== undefined) stats.noteSchemaId(r.row.schema_id);
+    } else {
+      parseErrors.push({ raw: m, error: r.error });
+      if (DESERIALIZE_CODES.includes(r.error.code)) stats.countDeserializeFailure(r.error.code);
+    }
   }
   if (parseErrors.length > 0) {
-    stats.countError('PERMANENT_PARSE', parseErrors.length);
+    for (const p of parseErrors) stats.countError(classifyParseCode(p.error.code));
     if (!deps.retry.dlqEnabled) throw new PoisonBatchError(parseErrors.map((p) => p.error));
   }
-  faults.hit('after_parse', part.length);
+  faults.hit('consumer:after-parse', { rows: part.length });
 
   if (deps.processingDelayMs > 0) {
     const w = deps.delayWindow;
@@ -189,23 +273,50 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
     if (delay) await (deps.sleep ?? defaultSleep)(deps.processingDelayMs);
   }
 
+  // S3-F3: what this partition had already stored BEFORE this chunk (one query per partition after an assignment).
+  const partition = part[0].partition;
+  const storedBefore = good.length > 0 && deps.progress ? await deps.progress.known(partition) : undefined;
   const out = await writeWithRetry(good, ctx, deps); // throws DbUnavailableError when the DB is down
-  faults.hit('after_db_commit', part.length);
+  faults.hit('consumer:after-db-commit', { rows: part.length });
 
   const dead: DeadLetter[] = [
-    ...parseErrors.map((p) => ({ raw: p.raw, errorClass: 'PERMANENT_PARSE' as const, errorCode: p.error.code, errorMessage: p.error.message, attempts: 1 })),
+    ...parseErrors.map((p) => ({ raw: p.raw, errorClass: classifyParseCode(p.error.code), errorCode: p.error.code, errorMessage: p.error.message, attempts: 0 })),
     ...out.dead,
   ];
-  if (dead.length > 0) {
-    try {
-      await deps.dlq.publish(dead); // acks=all; only then may the source offset move past these records
-    } catch (e) {
-      stats.dlqErrors++;
-      throw new DlqPublishError(e);
-    }
+  const now = (deps.now ?? Date.now)();
+  const retries: RetryLetter[] = out.retry.map((c) => {
+    const r = route(0, c.errorClass, deps.tiers!.policy, now, deps.rand);
+    if (r.kind !== 'retry') throw new Error(`a retry candidate routed to ${r.kind}`); // retriable at attempt 0 always gets tier 1
+    return {
+      raw: c.raw,
+      route: r,
+      origin: { topic: deps.sourceTopic ?? 'unknown', partition: c.raw.partition, offset: c.raw.offset, firstFailedAt: new Date(now).toISOString() },
+      failure: { errorClass: c.errorClass, errorCode: errorCode(c.error), errorMessage: String((c.error as Error)?.message ?? c.error) },
+    };
+  });
+  // Retry records and dead letters acknowledged (and indexed) before the source offset may move.
+  await settle(retries, dead, (ms) => ctx.pausePartition(ms), {
+    stats,
+    dlq: deps.dlq,
+    dlqMeta: deps.dlqMeta,
+    retryOut: deps.retryOut,
+    limiter: deps.limiter,
+    classifier: classifierOf(deps),
+    faults: deps.faults,
+    pauseMs: deps.retry.pauseMs,
+  });
+  // The chunk's work is done. consumed = inserted + duplicates + dlq + retried.
+  const causes = splitByCause(out.dups, storedBefore);
+  const reprocessed = reprocessedMessages(part.map((m) => m.offset), storedBefore);
+  stats.completeChunk({ consumed: part.length, attempted: out.attempted, inserted: out.inserted, dlq: dead, retried: retries.length, causes, reprocessed, partition });
+  if (deps.progress) {
+    const notWritten = new Set([...out.dead.map((d) => d.raw.offset), ...out.retry.map((c) => c.raw.offset)]);
+    const written = good.filter((g) => !notWritten.has(g.row.offset));
+    if (written.length > 0) deps.progress.advance(partition, written.reduce((m, g) => (BigInt(g.row.offset) > BigInt(m) ? g.row.offset : m), written[0].row.offset));
   }
-  // Rows committed and dead letters acknowledged: the chunk's work is done. consumed = inserted + duplicates + dlq.
-  stats.completeChunk({ consumed: part.length, attempted: out.attempted, inserted: out.inserted, dlq: dead });
+  if (deps.log && (out.dups.length > 0 || out.conflicts > 0)) {
+    deps.log(JSON.stringify({ msg: 'duplicates', partition, from_offset: part[0].offset, to_offset: part[part.length - 1].offset, attempted: out.attempted, inserted: out.inserted, duplicates: out.dups.length, ...causes, reprocessed_messages: reprocessed, conflicts: out.conflicts }));
+  }
 
   if (ctx.isStale()) {
     // Revoked while we were writing: the new owner reads this chunk again; ON CONFLICT absorbs it.
@@ -217,6 +328,7 @@ async function handleChunk(part: RawMessage[], ctx: BatchContext, deps: HandlerD
   const c0 = performance.now();
   await commitWithRetry(ctx, deps);
   stats.observeCommit(performance.now() - c0);
+  faults.hit('consumer:after-offset-commit', { rows: part.length });
   return true;
 }
 
@@ -251,7 +363,7 @@ async function writeWithRetry(
   ctx: BatchContext,
   deps: HandlerDeps,
 ): Promise<WriteOutcome> {
-  if (good.length === 0) return { attempted: 0, inserted: 0, dead: [] };
+  if (good.length === 0) return NOTHING;
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
   const p = deps.retry;
@@ -264,11 +376,12 @@ async function writeWithRetry(
       if (!p.dlqEnabled) return fromWrite(await deps.writer.writeChunk(rows)); // S2-F3 behavior: any error throws
       return await writeIsolating(rows, rawByOffset, deps);
     } catch (e) {
-      const cls = classifyDbError(e);
-      if (!p.dlqEnabled && !isBlocking(cls)) {
+      const cls = classifierOf(deps).classify(e);
+      if (!p.dlqEnabled && !blockingHere(cls, deps)) {
         deps.stats.countError(cls);
         throw e; // DLQ off: a permanent row error blocks the partition (the client retries the chunk)
       }
+      if (!blockingHere(cls, deps)) throw e; // a bug: writeIsolating handles every row-level class
       deps.stats.countError(cls);
       if (!ctx.isRunning() || ctx.isStale()) throw e;
       const wait = backoffMs(attempt, p.baseMs, p.maxMs, deps.rand);
@@ -287,7 +400,8 @@ async function writeWithRetry(
 
 /**
  * Write a set of rows in one transaction; if Postgres rejects it for a row-level reason, split it in halves
- * until the bad rows are alone, retry each bad row maxRetries times, then dead-letter it.
+ * until the bad rows are alone. A row failing alone: PERMANENT_DB -> dead letter, TRANSIENT_RECORD / UNKNOWN ->
+ * retry tier (S3-F5); with tiers off, the Stage 2 in-process retries (retryOneRow).
  * Blocking errors (DB down / schema broken) are rethrown at any depth: the whole chunk is then retried.
  */
 async function writeIsolating(
@@ -296,21 +410,47 @@ async function writeIsolating(
   deps: HandlerDeps,
   depth = 0,
 ): Promise<WriteOutcome> {
+  const classify = (e: unknown) => classifierOf(deps).classify(e);
+  let error: unknown;
   try {
     return fromWrite(await deps.writer.writeChunk(rows));
   } catch (e) {
-    const cls = classifyDbError(e);
-    if (isBlocking(cls)) throw e;
-    // Not counted in errors_by_class here: a bad row is counted once, when it is finally dead-lettered.
-    if (depth === 0) deps.stats.isolations++;
-    if (rows.length > 1) {
-      const mid = rows.length >> 1;
-      const a = await writeIsolating(rows.slice(0, mid), rawByOffset, deps, depth + 1);
-      const b = await writeIsolating(rows.slice(mid), rawByOffset, deps, depth + 1);
-      return add(a, b);
-    }
-    return retryOneRow(rows[0], e, cls, rawByOffset, deps);
+    error = e;
   }
+  let cls = classify(error);
+  if (blockingHere(cls, deps)) throw error;
+  // A transient record-level error for the WHOLE chunk is usually gone on the next try: retry in-process first,
+  // so a deadlock does not turn a healthy chunk into retry-topic traffic.
+  if (depth === 0 && deps.tiers && cls === 'TRANSIENT_RECORD') {
+    for (let attempt = 1; attempt <= deps.tiers.inProcessAttempts; attempt++) {
+      deps.stats.countRetry(cls);
+      await (deps.sleep ?? defaultSleep)(backoffMs(attempt, deps.retry.baseMs, deps.retry.maxMs, deps.rand));
+      try {
+        return fromWrite(await deps.writer.writeChunk(rows));
+      } catch (e) {
+        error = e;
+        cls = classify(e);
+        if (blockingHere(cls, deps)) throw e;
+        if (cls !== 'TRANSIENT_RECORD') break;
+      }
+    }
+  }
+  // Not counted in errors_by_class here: a bad row is counted once, when its fate is decided.
+  if (depth === 0) deps.stats.isolations++;
+  if (rows.length > 1) {
+    const mid = rows.length >> 1;
+    const a = await writeIsolating(rows.slice(0, mid), rawByOffset, deps, depth + 1);
+    const b = await writeIsolating(rows.slice(mid), rawByOffset, deps, depth + 1);
+    return add(a, b);
+  }
+  const row = rows[0];
+  if (!deps.tiers) return retryOneRow(row, error, cls, rawByOffset, deps);
+  deps.stats.countError(cls);
+  const raw = rawByOffset.get(row.offset)!;
+  if (cls === 'PERMANENT_DB' || cls === 'PERMANENT_PARSE' || cls === 'PERMANENT_SCHEMA') {
+    return { ...NOTHING, dead: [{ raw, errorClass: cls, errorCode: errorCode(error), errorMessage: String((error as Error)?.message ?? error), attempts: 0, tenantId: row.tenant_id, eventId: row.event_id }] };
+  }
+  return { ...NOTHING, retry: [{ raw, row, errorClass: cls, error }] };
 }
 
 async function retryOneRow(
@@ -329,8 +469,8 @@ async function retryOneRow(
     try {
       return fromWrite(await deps.writer.writeChunk([row])); // it was flaky after all
     } catch (e) {
-      const cls = classifyDbError(e);
-      if (isBlocking(cls)) throw e;
+      const cls = classifierOf(deps).classify(e);
+      if (blockingHere(cls, deps)) throw e;
       lastError = e;
       lastClass = cls;
     }
@@ -346,7 +486,12 @@ async function retryOneRow(
         errorCode: errorCode(lastError),
         errorMessage: String((lastError as Error)?.message ?? lastError),
         attempts: 1 + deps.retry.maxRetries,
+        tenantId: row.tenant_id,
+        eventId: row.event_id,
       },
     ],
+    retry: [],
+    dups: [],
+    conflicts: 0,
   };
 }

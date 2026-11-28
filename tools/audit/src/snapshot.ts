@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { createKafka, loadKafkaClientConfig } from '@eventpulse/kafka-config';
 import { groupLag } from './checks.ts';
-import type { ApiStats, ConsumerStats, PartitionOffsets, RunFacts, Snapshot } from './types.ts';
+import type { ApiStats, ConsumerStats, IdemCounts, PartitionOffsets, RunFacts, Snapshot } from './types.ts';
 
 export const REPO = resolve(import.meta.dirname, '../../..');
 
@@ -18,6 +18,9 @@ function envFileValue(path: string, key: string): string | undefined {
 }
 
 export interface AuditConfig {
+  /** S3-F5: the retry tiers and their group (records there are committed by the main group but not stored yet). */
+  retryTopics: string[];
+  retryGroup: string;
   topic: string;
   dlqTopic: string;
   group: string;
@@ -31,10 +34,13 @@ export interface AuditConfig {
 export function loadAuditConfig(env = process.env): AuditConfig {
   const databaseUrl = env.AUDIT_DATABASE_URL || envFileValue(resolve(REPO, 'services/consumer-sink/.env'), 'DATABASE_URL');
   if (!databaseUrl) throw new Error('No database URL: set AUDIT_DATABASE_URL or DATABASE_URL in services/consumer-sink/.env');
+  const group = env.AUDIT_GROUP || 'sink-postgres';
   return {
+    retryTopics: (env.AUDIT_RETRY_TOPICS ?? 'events.retry.1,events.retry.2,events.retry.3').split(',').map((s) => s.trim()).filter(Boolean),
+    retryGroup: env.AUDIT_RETRY_GROUP || `${group}-retry`,
     topic: env.AUDIT_TOPIC || 'events.raw',
     dlqTopic: env.AUDIT_DLQ_TOPIC || 'events.dlq',
-    group: env.AUDIT_GROUP || 'sink-postgres',
+    group,
     databaseUrl,
     apiStatsUrl: env.API_STATS_URL || 'http://localhost:8000/debug/stats',
     consumerStatsUrls: (env.CONSUMER_STATS_URLS || 'http://localhost:8001/debug/stats,http://localhost:8002/debug/stats,http://localhost:8003/debug/stats')
@@ -80,7 +86,19 @@ async function kafkaState(cfg: AuditConfig) {
     const dlq = toParts(await a.fetchTopicOffsets(cfg.dlqTopic));
     const off = await a.fetchOffsets({ groupId: cfg.group, topics: [cfg.topic] });
     const committed = ((off[0]?.partitions ?? []) as any[]).map((p) => ({ partition: p.partition, offset: Number(p.offset) }));
-    return { raw, dlq, committed };
+    // Retry tiers: missing topics (a Stage 2 cluster) mean "no retry lag", not an error.
+    let retry_lag: number | null = cfg.retryTopics.length ? 0 : null;
+    for (const t of cfg.retryTopics) {
+      try {
+        const parts = toParts(await a.fetchTopicOffsets(t));
+        const ro = await a.fetchOffsets({ groupId: cfg.retryGroup, topics: [t] });
+        const rc = ((ro[0]?.partitions ?? []) as any[]).map((p) => ({ partition: p.partition, offset: Number(p.offset) }));
+        retry_lag = (retry_lag ?? 0) + groupLag(parts, rc);
+      } catch {
+        /* topic does not exist */
+      }
+    }
+    return { raw, dlq, committed, retry_lag };
   });
 }
 
@@ -90,26 +108,62 @@ export async function takeSnapshot(cfg: AuditConfig): Promise<Snapshot> {
   const client = new pg.Client({ connectionString: cfg.databaseUrl });
   await client.connect();
   let rows_total = 0;
+  let dlq_meta_rows: number | null = null;
+  let outbox: { unpublished: number; oldest_age_s: number | null } | null = null;
   try {
     rows_total = Number((await client.query('select count(*) from events')).rows[0].count);
+    dlq_meta_rows = await client
+      .query('select count(*) from dlq_meta')
+      .then((r) => Number(r.rows[0].count))
+      .catch(() => null); // before migration 0006
+    outbox = await client
+      .query('select count(*)::int as n, extract(epoch from now() - min(created_at))::float8 as age from outbox where published_at is null')
+      .then((r) => ({ unpublished: r.rows[0].n as number, oldest_age_s: r.rows[0].age === null ? null : Number(r.rows[0].age) }))
+      .catch(() => null); // before migration 0008
   } finally {
     await client.end();
   }
 
   const a = await getJson(cfg.apiStatsUrl);
   const api: ApiStats | null = a
-    ? { url: cfg.apiStatsUrl, uptime_s: a.uptime_s, acked: a.producer?.acked ?? 0, failed: a.producer?.failed ?? 0, http_202: a.http?.by_status?.['202'] ?? 0, by503: a.http?.['503_by_reason'] ?? {} }
+    ? {
+        url: cfg.apiStatsUrl,
+        uptime_s: a.uptime_s,
+        acked: a.producer?.acked ?? 0,
+        failed: a.producer?.failed ?? 0,
+        http_202: a.http?.by_status?.['202'] ?? 0,
+        by503: a.http?.['503_by_reason'] ?? {},
+        ...(a.idempotency?.by_result ? { idem: idemCounts(a.idempotency.by_result) } : {}),
+      }
     : null;
   if (!api) notes.push(`API stats not reachable at ${cfg.apiStatsUrl}`);
 
   const consumers: ConsumerStats[] = [];
   for (const url of cfg.consumerStatsUrls) {
     const c = await getJson(url);
-    if (c) consumers.push({ url, uptime_s: c.uptime_s, consumed: c.consumed, attempted: c.attempted, inserted: c.inserted, duplicates: c.duplicates, dlq: c.dlq });
+    if (c) {
+      const byCause = c.duplicates_by_cause;
+      consumers.push({
+        url,
+        uptime_s: c.uptime_s,
+        consumed: c.consumed,
+        attempted: c.attempted,
+        inserted: c.inserted,
+        duplicates: c.duplicates,
+        dlq: c.dlq,
+        ...(byCause ? { dup_reprocessed: byCause.reprocessed ?? 0, dup_redelivered: byCause.redelivered ?? 0, dup_unknown: byCause.unknown ?? 0, conflicts: c.conflicting_duplicates ?? 0 } : {}),
+        ...(typeof c.retried === 'number' ? { retried: c.retried } : {}),
+      });
+    }
   }
   if (consumers.length === 0) notes.push('no consumer /debug/stats reachable');
 
-  return { taken_at: new Date().toISOString(), topic: cfg.topic, dlq_topic: cfg.dlqTopic, group: cfg.group, ...k, db: { rows_total }, api, consumers, notes };
+  return { taken_at: new Date().toISOString(), topic: cfg.topic, dlq_topic: cfg.dlqTopic, group: cfg.group, ...k, db: { rows_total, dlq_meta_rows, outbox }, api, consumers, notes };
+}
+
+function idemCounts(b: Record<string, number>): IdemCounts {
+  const n = (k: string) => Number(b[k] ?? 0);
+  return { new: n('new'), replayed: n('replayed'), in_progress: n('in_progress'), payload_mismatch: n('payload_mismatch'), fail_open: n('fail_open'), fail_closed: n('fail_closed'), disabled: n('disabled') };
 }
 
 /** Poll the group lag until it is 0 or the timeout passes. Every wait is bounded. */
@@ -119,10 +173,11 @@ export async function waitDrained(cfg: AuditConfig, log: (s: string) => void): P
   let lastPrint = 0;
   while (Date.now() - t0 < cfg.drainTimeoutS * 1000) {
     const k = await kafkaState(cfg);
-    lag = groupLag(k.raw, k.committed);
+    // Drained = the main group AND the retry-tier group are at the end (a record waiting on a tier is in flight).
+    lag = groupLag(k.raw, k.committed) + (k.retry_lag ?? 0);
     if (lag === 0) break;
     if (Date.now() - lastPrint > 5000) {
-      log(`  waiting for the consumer to drain: lag ${lag}`);
+      log(`  waiting for the consumer to drain: lag ${lag} (retry tiers ${k.retry_lag ?? 0})`);
       lastPrint = Date.now();
     }
     await new Promise((r) => setTimeout(r, 1000));

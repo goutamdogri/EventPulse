@@ -80,4 +80,28 @@ describe('KafkaHealthChecker', () => {
     const c = new KafkaHealthChecker(() => Promise.reject(new Error('connect failed')), breaker, { topic: 't', minIsr: 2, timeoutMs: 100, staleAfterMs: 1000 });
     await expect(c.check()).resolves.toMatchObject({ ok: false });
   });
+
+  it('a failed check (timeout or error) discards the admin client, so the next check uses a fresh one; a passing check keeps it', async () => {
+    vi.useFakeTimers();
+    const breaker = new CircuitBreaker(3, 5000);
+    let created = 0;
+    let discarded = 0;
+    const answers = [() => new Promise<any>(() => undefined), () => Promise.resolve(parts([1, 3], [2, 3])), () => Promise.resolve(parts([1, 3], [2, 3]))];
+    let i = 0;
+    const getAdmin = async (): Promise<HealthAdmin> => {
+      created++;
+      return { fetchTopicMetadata: () => answers[i++](), discard: () => void discarded++ };
+    };
+    const c = new KafkaHealthChecker(getAdmin, breaker, { topic: 't', minIsr: 2, timeoutMs: 1000, staleAfterMs: 7000 });
+    const p = c.check();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await p).ok).toBe(false);
+    expect(discarded).toBe(1); // stuck on a dead broker's connection: thrown away
+    expect((await c.check()).ok).toBe(true);
+    expect(breaker.state()).toBe('closed'); // the fresh client reached a live broker: the API serves again
+    await c.check();
+    expect(discarded).toBe(1);
+    expect(created).toBe(3);
+    vi.useRealTimers();
+  });
 });

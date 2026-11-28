@@ -43,7 +43,7 @@ export const deleteTopic = (topic: string) => withAdmin((a) => a.deleteTopics({ 
  * Produces n events (encoded like the API does). Keyed by event_id so they spread over all partitions,
  * unless `key` is given: then all go to that key's partition (a "busy" partition).
  */
-export async function produceEvents(topic: string, n: number, opts: { key?: string } = {}): Promise<string[]> {
+export async function produceEvents(topic: string, n: number, opts: { key?: string; tenant?: string } = {}): Promise<string[]> {
   const producer = kafka().producer({ kafkaJS: { acks: -1, idempotent: true }, 'linger.ms': 0 } as any);
   await producer.connect();
   const ids: string[] = [];
@@ -53,7 +53,7 @@ export async function produceEvents(topic: string, n: number, opts: { key?: stri
         const event_id = randomUUID();
         ids.push(event_id);
         const e = encodeEvent({
-          tenantId: 'sink_e2e_proc',
+          tenantId: opts.tenant ?? 'sink_e2e_proc',
           event: { event_id, type: 'x', occurred_at: new Date().toISOString(), schema_version: 1, payload: { i } },
           receivedAt: new Date(),
           requestId: 'e2e',
@@ -127,7 +127,9 @@ export function spawnSink(env: Record<string, string>): SinkProcess {
   const log: string[] = [];
   const proc = spawn(process.execPath, ['dist/main.js'], {
     cwd: resolve(import.meta.dirname, '..'),
-    env: { ...process.env, LOG_ENABLED: 'true', KAFKA_LOG_LEVEL: 'error', CONSUMER_FROM_BEGINNING: 'true', METRICS_PORT: String(port), ...env },
+    // Retry tiers are off unless a test passes its own throw-away RETRY_TOPICS: the defaults are the REAL
+    // events.retry.* topics, which tests must never touch.
+    env: { ...process.env, LOG_ENABLED: 'true', KAFKA_LOG_LEVEL: 'error', CONSUMER_FROM_BEGINNING: 'true', METRICS_PORT: String(port), RETRY_TOPICS_ENABLED: env.RETRY_TOPICS ? 'true' : 'false', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   proc.stdout!.on('data', (d) => log.push(String(d)));

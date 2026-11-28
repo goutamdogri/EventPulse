@@ -1,0 +1,27 @@
+{
+  "name": "@eventpulse/dlq-replay",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S3-F6 DLQ triage and replay: stats, list, show, replay (dry run by default), reindex.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "dlq-replay": "node src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@eventpulse/fault-injector": "workspace:*",
+    "@eventpulse/idempotency": "workspace:*",
+    "@eventpulse/kafka-config": "workspace:*",
+    "@eventpulse/retry": "workspace:*",
+    "@eventpulse/schema": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

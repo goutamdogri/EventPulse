@@ -1,0 +1,20 @@
+{
+  "$comment": "Subject -> its schema history (registered IN THIS ORDER), compatibility level and fixtures directory. tools/schema-check registers every version in order under the level, so the whole history is checked, not only the last pair. FULL_TRANSITIVE: producers and consumers deploy independently and replays read old data with new code, so only fields WITH defaults may be added or removed. fixtures: <dir>/incompatible/*.avsc must be rejected and <dir>/compatible/*.avsc accepted on top of the history.",
+  "subjects": {
+    "events.raw-value": {
+      "files": [
+        "events/v1.avsc",
+        "events/v2.avsc"
+      ],
+      "compatibility": "FULL_TRANSITIVE",
+      "fixtures": "fixtures"
+    },
+    "config.changed-value": {
+      "files": [
+        "config/v1.avsc"
+      ],
+      "compatibility": "FULL_TRANSITIVE",
+      "fixtures": "fixtures/config"
+    }
+  }
+}

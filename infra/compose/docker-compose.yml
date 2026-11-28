@@ -131,10 +131,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # B3: Toxiproxy sits between ingest-api and Postgres so B3 can add latency to every query.
-  #   ingest-api -> localhost:15434 (toxiproxy) -> postgres:5432
-  # The proxy itself ("pg") is created by loadtests/k6/stage-1/B3/run.sh through the HTTP API on :8474.
-  # Other experiments ignore it (they connect straight to :5434). It shares the monitoring cores.
+  # Toxiproxy sits between a service and a dependency so tests and experiments can cut it off or slow it down.
+  #   consumer-sink / ingest-api -> localhost:15434 (proxy "pg")    -> postgres:5432   (B3, S2-F3/F4 e2e tests)
+  #   ingest-api                 -> localhost:16379 (proxy "redis") -> redis:6379      (Stage 3: C5, S3-F1 e2e tests)
+  #   ingest-api / consumer-sink -> localhost:18081 (proxy "registry") -> host:8081    (Stage 3: C11, S3-F7 e2e tests;
+  #                                 the registry runs in the Kafka compose project, so it is reached through the host)
+  # The proxies are created through the HTTP API on :8474 by `make toxiproxy` (idempotent; recreating this
+  # container loses them). Normal runs connect straight to :5434 / :6379. It shares the monitoring cores.
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.13.0
     container_name: ep-toxiproxy
@@ -142,8 +145,55 @@ services:
     ports:
       - "8474:8474"       # control API (curl localhost:8474/proxies)
       - "15434:15434"     # the proxied Postgres port
+      - "16379:16379"     # the proxied Redis port
+      - "18081:18081"     # the proxied Schema Registry port
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Stage 3 (S3-F1): API idempotency keys. A CACHE by design: no persistence (correctness never depends on it; the
+  # sink's (tenant_id, event_id) key does). noeviction: when full, writes fail (visible, handled by
+  # IDEM_FAILURE_POLICY) instead of keys being silently evicted. Single instance; clustering comes in Stage 5.
+  # Tests use database 15 (redis://localhost:6379/15), never 0.
+  redis:
+    image: redis:7.4.2-alpine
+    container_name: ep-redis
+    cpuset: *postgres-cpus
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 1gb
+      --maxmemory-policy noeviction
+    cpus: 1
+    # maxmemory (1 GB, ~3.9 M idempotency keys = ~1,000 events/s over the 1 h IDEM_TTL_S window, ADR 0004)
+    # plus headroom for buffers and fragmentation, so the container is never OOM-killed before Redis says "full".
+    mem_limit: 1280m
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  # Redis memory, keys, ops and latency for Prometheus (Stage 3: Redis memory per million keys, C14).
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    container_name: ep-redis-exporter
+    cpuset: *monitoring-cpus
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "9121:9121"       # curl localhost:9121/metrics
+    depends_on:
+      redis:
         condition: service_healthy
     restart: unless-stopped
 

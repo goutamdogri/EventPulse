@@ -1,7 +1,7 @@
 import { Registry } from '@prometheus-io/client';
 import { encodeEvent } from '@eventpulse/kafka-config';
 import { handleBatch } from '../consumer/batch-handler.js';
-import { FaultInjector } from '../consumer/fault-injector.js';
+import { FaultInjector } from '@eventpulse/fault-injector';
 import type { EventRow, RawMessage } from '../sink/parse.js';
 import { computeLag } from './lag.js';
 import { SinkStats } from './sink-stats.js';
@@ -36,9 +36,9 @@ function deps(stats: SinkStats, dupesPerChunk: number) {
     },
     stats,
     maxRows: 50,
-    faults: new FaultInjector({ crashAt: 'none', crashAfterBatches: 1 }, () => undefined),
+    faults: new FaultInjector(undefined, () => undefined),
     processingDelayMs: 0,
-    dlq: { publish: async () => undefined },
+    dlq: { publish: async () => [] },
     retry: { dlqEnabled: true, maxRetries: 3, baseMs: 1, maxMs: 1, transientWindowMs: 0, pauseMs: 1 },
   };
 }

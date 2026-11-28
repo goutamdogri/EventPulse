@@ -1,0 +1,181 @@
+{
+  "suite": "ingest-api-e2e",
+  "generatedAt": "2026-11-28T06:12:27.194Z",
+  "commit": "e2895bc1",
+  "dirty": true,
+  "sourceHash": "1c5a97f274594accaa2086838e6b10551de6e953be376feaf8d1d1b46241a44e",
+  "success": true,
+  "numTotalTests": 34,
+  "tests": [
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable all brokers down: every request is 503 + Retry-After, fast once the breaker is open, readyz 503, liveness stays 200",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable brokers come back: 202 again and the record lands in the log, with no API restart",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable API starts while Kafka is down (readyz 503, requests 503); when brokers start it serves 202",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable 2 of 3 brokers down (below min.insync.replicas): 503, never 202",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable memory stays flat under a sustained flood while Kafka is down; queue never exceeds BATCH_MAX_QUEUE",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable readiness follows Kafka with NO traffic at all: down -> 503, back -> 200 (background health check)",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events-kafka-down.e2e-spec.ts",
+      "title": "Kafka unavailable a request arriving during the SIGTERM drain gets 503 shutting_down + Retry-After (not 500)",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events.e2e-spec.ts",
+      "title": "POST /v1/events -> Kafka 202 only after the ack: the record is already in the log when the response arrives",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events.e2e-spec.ts",
+      "title": "POST /v1/events -> Kafka concurrent requests are batched and each one is acknowledged",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events.e2e-spec.ts",
+      "title": "POST /v1/events -> Kafka invalid event: 400 and nothing written",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events.e2e-spec.ts",
+      "title": "POST /v1/events -> Kafka bad key: 401 and nothing written",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events.e2e-spec.ts",
+      "title": "POST /v1/events -> Kafka oversized body: 413 at the edge, Kafka never sees it",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/events.e2e-spec.ts",
+      "title": "POST /v1/events -> Kafka readyz reports Kafka up",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis-down.e2e-spec.ts",
+      "title": "S3-F1 Redis unavailable, IDEM_FAILURE_POLICY=open [G8.redis-down-open] Redis cut off: 202 without dedup, bounded latency, recovers",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis-down.e2e-spec.ts",
+      "title": "S3-F1 Redis unavailable, IDEM_FAILURE_POLICY=closed [G8.redis-down-closed] Redis cut off: 503 + Retry-After, bounded latency, recovers",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis.e2e-spec.ts",
+      "title": "RedisStore (real Redis, db 15) acquire is SET NX EX: the first wins, the second gets the current value",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis.e2e-spec.ts",
+      "title": "RedisStore (real Redis, db 15) replace only from the exact expected value (owner check), with the new TTL",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis.e2e-spec.ts",
+      "title": "RedisStore (real Redis, db 15) remove only the exact expected value",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis.e2e-spec.ts",
+      "title": "RedisStore (real Redis, db 15) an inflight key expires by itself (the abandoned-request case)",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis.e2e-spec.ts",
+      "title": "RedisStore (real Redis, db 15) works after SCRIPT FLUSH (ioredis falls back from EVALSHA to EVAL)",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency-redis.e2e-spec.ts",
+      "title": "RedisStore (real Redis, db 15) end to end with the state machine: values written in the documented format",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) [G8.same-key] same Idempotency-Key twice: one record; the second is the original result, marked replayed",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) no header: the event_id is the key",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) [G8.key-reuse] same key, different payload: 422, nothing produced",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) a body that differs only by key order and whitespace is the SAME request (canonical hash)",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) [G8.concurrency] 50 parallel identical requests: exactly one record; the others get 409 or the replayed 202",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) in progress: 409 + Retry-After, nothing produced; it frees itself when the inflight key expires",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) [G8.tenant-scope] the same key under two tenants is two requests",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) Redis flushed between two identical requests: the second is produced again (Layer 1 is only an optimization)",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) an invalid Idempotency-Key is a 400 and produces nothing",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/idempotency.e2e-spec.ts",
+      "title": "S3-F1 idempotent ingest (API + Kafka + Redis) metrics: ep_idem_requests_total by result, Redis latency, and /debug/stats idempotency section",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/metrics.e2e-spec.ts",
+      "title": "API metrics (S2-F6) /debug/stats has every field, and producer.acked equals the number of 202s",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/metrics.e2e-spec.ts",
+      "title": "API metrics (S2-F6) /metrics exposes every series of the plan",
+      "status": "passed"
+    },
+    {
+      "file": "services/ingest-api/test/shutdown.e2e-spec.ts",
+      "title": "SIGTERM with queued requests every queued request is answered 202 and is in the log before the process exits",
+      "status": "passed"
+    }
+  ]
+}

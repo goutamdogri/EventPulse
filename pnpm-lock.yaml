@@ -172,6 +172,37 @@ importers:
         specifier: ^0.16.1
         version: 0.16.1
 
+  packages/fault-injector:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  packages/idempotency:
+    dependencies:
+      ioredis:
+        specifier: ^6.1.0
+        version: 6.1.0(supports-color@7.2.0)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      fast-check:
+        specifier: ^4.11.0
+        version: 4.11.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
   packages/kafka-config:
     dependencies:
       '@confluentinc/kafka-javascript':
@@ -188,14 +219,171 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
 
+  packages/outbox:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../fault-injector
+      '@eventpulse/retry':
+        specifier: workspace:*
+        version: link:../retry
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../schema
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  packages/retry:
+    dependencies:
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../schema
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      fast-check:
+        specifier: ^4.11.0
+        version: 4.11.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  packages/schema:
+    dependencies:
+      avsc:
+        specifier: 5.7.9
+        version: 5.7.9
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      fast-check:
+        specifier: ^4.11.0
+        version: 4.11.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  services/admin-api:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/kafka-config':
+        specifier: workspace:*
+        version: link:../../packages/kafka-config
+      '@eventpulse/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
+      '@eventpulse/retry':
+        specifier: workspace:*
+        version: link:../../packages/retry
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+      '@nestjs/common':
+        specifier: ^12.0.1
+        version: 12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
+      '@nestjs/core':
+        specifier: ^12.0.1
+        version: 12.4.2(@nestjs/common@12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/platform-express@12.4.2)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/platform-express':
+        specifier: ^12.0.1
+        version: 12.4.2(@nestjs/common@12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.4.2)(rxjs@7.8.2)(supports-color@7.2.0)
+      '@prometheus-io/client':
+        specifier: ^0.16.1
+        version: 0.16.1
+      class-transformer:
+        specifier: ^0.5.1
+        version: 0.5.1
+      class-validator:
+        specifier: ^0.15.1
+        version: 0.15.1
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+      reflect-metadata:
+        specifier: ^0.2.2
+        version: 0.2.2
+      rxjs:
+        specifier: ^7.8.1
+        version: 7.8.2
+    devDependencies:
+      '@nestjs/cli':
+        specifier: ^12.0.0
+        version: 12.0.12(@types/node@24.19.2)(prettier@3.9.10)
+      '@nestjs/schematics':
+        specifier: ^12.0.0
+        version: 12.0.13(chokidar@5.0.0)(prettier@3.9.10)(typescript@6.0.3)
+      '@nestjs/testing':
+        specifier: ^12.0.1
+        version: 12.4.2(@nestjs/common@12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0))(@nestjs/core@12.4.2)(@nestjs/platform-express@12.4.2)
+      '@types/express':
+        specifier: ^5.0.0
+        version: 5.0.6
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.2
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      '@types/supertest':
+        specifier: ^7.0.0
+        version: 7.2.1
+      supertest:
+        specifier: ^7.0.0
+        version: 7.3.2(supports-color@7.2.0)
+      typescript:
+        specifier: ^6.0.2
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.0
+        version: 8.3.8(@types/node@24.19.2)(jiti@2.7.0)
+      vitest:
+        specifier: ^4.1.2
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
   services/consumer-sink:
     dependencies:
       '@confluentinc/kafka-javascript':
         specifier: 1.11.0
         version: 1.11.0(supports-color@7.2.0)
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/idempotency':
+        specifier: workspace:*
+        version: link:../../packages/idempotency
       '@eventpulse/kafka-config':
         specifier: workspace:*
         version: link:../../packages/kafka-config
+      '@eventpulse/retry':
+        specifier: workspace:*
+        version: link:../../packages/retry
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
       '@nestjs/common':
         specifier: ^12.4.2
         version: 12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
@@ -272,9 +460,18 @@ importers:
       '@confluentinc/kafka-javascript':
         specifier: 1.11.0
         version: 1.11.0(supports-color@7.2.0)
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/idempotency':
+        specifier: workspace:*
+        version: link:../../packages/idempotency
       '@eventpulse/kafka-config':
         specifier: workspace:*
         version: link:../../packages/kafka-config
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
       '@nestjs/common':
         specifier: ^12.0.1
         version: 12.4.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@7.2.0)
@@ -293,6 +490,9 @@ importers:
       class-validator:
         specifier: ^0.15.1
         version: 0.15.1
+      ioredis:
+        specifier: ^6.1.0
+        version: 6.1.0(supports-color@7.2.0)
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -352,6 +552,80 @@ importers:
         specifier: ^4.1.2
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
 
+  services/outbox-relay:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/kafka-config':
+        specifier: workspace:*
+        version: link:../../packages/kafka-config
+      '@eventpulse/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
+      '@eventpulse/retry':
+        specifier: workspace:*
+        version: link:../../packages/retry
+      '@prometheus-io/client':
+        specifier: ^0.16.1
+        version: 0.16.1
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  tests/correctness:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/idempotency':
+        specifier: workspace:*
+        version: link:../../packages/idempotency
+      '@eventpulse/kafka-config':
+        specifier: workspace:*
+        version: link:../../packages/kafka-config
+      '@eventpulse/outbox':
+        specifier: workspace:*
+        version: link:../../packages/outbox
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+      dotenv:
+        specifier: ^18.0.10
+        version: 18.0.10
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      fast-check:
+        specifier: ^4.11.0
+        version: 4.11.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
   tools/audit:
     dependencies:
       '@eventpulse/kafka-config':
@@ -367,6 +641,72 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  tools/dlq-replay:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+      '@eventpulse/idempotency':
+        specifier: workspace:*
+        version: link:../../packages/idempotency
+      '@eventpulse/kafka-config':
+        specifier: workspace:*
+        version: link:../../packages/kafka-config
+      '@eventpulse/retry':
+        specifier: workspace:*
+        version: link:../../packages/retry
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  tools/guarantee-check:
+    dependencies:
+      '@eventpulse/fault-injector':
+        specifier: workspace:*
+        version: link:../../packages/fault-injector
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(vite@8.3.8(@types/node@24.19.2)(jiti@2.7.0))
+
+  tools/schema-check:
+    dependencies:
+      '@eventpulse/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -577,6 +917,9 @@ packages:
     peerDependenciesMeta:
       '@types/node':
         optional: true
+
+  '@ioredis/commands@2.4.0':
+    resolution: {integrity: sha512-fyu7ZM5RvtsYZ3pz4DFlPqSGB3aoVD9ir0vL6/TLtRo8EMuC7f0Z+qGBskDkUL/gJs5fzelxityZAfNNUCrVrQ==}
 
   '@isaacs/fs-minipass@4.0.1':
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
@@ -1158,6 +1501,10 @@ packages:
   asynckit@0.4.0:
     resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
 
+  avsc@5.7.9:
+    resolution: {integrity: sha512-yOA4wFeI7ET3v32Di/sUybQ+ttP20JHSW3mxLuNGeO0uD6PPcvLrIQXSvy/rhJOWU5JrYh7U4OHplWMmtAtjMg==}
+    engines: {node: '>=0.11'}
+
   balanced-match@4.0.4:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
@@ -1352,6 +1699,10 @@ packages:
     resolution: {integrity: sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==}
     engines: {node: '>=0.4.0'}
 
+  denque@2.1.0:
+    resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==}
+    engines: {node: '>=0.10'}
+
   depd@2.0.0:
     resolution: {integrity: sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==}
     engines: {node: '>= 0.8'}
@@ -1441,6 +1792,10 @@ packages:
   external-editor@3.1.0:
     resolution: {integrity: sha512-hMQ4CX1p1izmuLYyZqLMO/qGNw10wSv9QDCPfzXfyFrOaCSSoRfqE1Kf1s5an66J5JZC62NewG+mK49jOCtQew==}
     engines: {node: '>=4'}
+
+  fast-check@4.11.0:
+    resolution: {integrity: sha512-V4Uc238rhQOdQlc+Gz7JG6SGBtrWnWL8d/6RyiBeCMcNKMhF6DZ0KkAVHJSyNV5r4lA0PmIpZ6iRpTVoz4qjoA==}
+    engines: {node: '>=12.17.0'}
 
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
@@ -1576,6 +1931,10 @@ packages:
   inquirer@8.2.6:
     resolution: {integrity: sha512-M1WuAmb7pn9zdFRtQYk26ZBoY043Sse0wVDdk4Bppr+JOXyQYybdtvK+l9wUibhtjdjvtoiNy8tk+EgsYIUqKg==}
     engines: {node: '>=12.0.0'}
+
+  ioredis@6.1.0:
+    resolution: {integrity: sha512-0ooWUoxEiWEcCA0FFBsmCnYHnjiFgWPQwA144NxpQzLIVkW20JUjAoKtMg+7spFn+6OAI68XwpcLcGKW5xe4UA==}
+    engines: {node: '>=20.0.0'}
 
   ipaddr.js@1.9.1:
     resolution: {integrity: sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==}
@@ -2022,6 +2381,9 @@ packages:
     resolution: {integrity: sha512-5nnx0yGyVUcY6t9RnWcARWtwT9F1D8O9rt08htPvnd49W1IgZtmLkhu9WfMzQj1cFxjHIO6connUNVW5k7AVyQ==}
     engines: {node: '>= 0.10'}
 
+  pure-rand@8.4.2:
+    resolution: {integrity: sha512-vvuOGgcuPJAirlHvuQw1TrOiw7ptaIXXmIbNuiNOY6lNGJJH49PQ1Kj4nd783nPdQhQdicgOjVI2yI/9BD6/Ng==}
+
   qs@6.17.1:
     resolution: {integrity: sha512-jd3COkaKVgGUW+ZHyEHCG9bH7RoaaiWuMgzsIBjUMVjLAaWGWpoUAVwljVvBHxRu/2qEHnadLGZrkutYUBPQJA==}
     engines: {node: '>=0.6'}
@@ -2041,6 +2403,10 @@ packages:
   readdirp@5.1.1:
     resolution: {integrity: sha512-Kko+Y5XQ6fM+Ce3dq3m9YGxnacYZYl9cA1wZjaF3Vbry2L3i1qVg8+CAgNPsXRArPMUMCaOR7oa9Nqntc43JKA==}
     engines: {node: '>= 20.19.0'}
+
+  redis-errors@1.2.0:
+    resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
+    engines: {node: '>=4'}
 
   reflect-metadata@0.2.2:
     resolution: {integrity: sha512-urBwgfrvVP/eAyXx4hluJivBKzuEbSQs9rKWCrCkbSxNv8mxPcUZKeuoF3Uy4mJl3Lwprp6yy5/39VWigZ4K6Q==}
@@ -2146,6 +2512,9 @@ packages:
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
+
+  standard-as-callback@2.1.0:
+    resolution: {integrity: sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==}
 
   statuses@2.0.2:
     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
@@ -2649,6 +3018,8 @@ snapshots:
     optionalDependencies:
       '@types/node': 24.19.2
 
+  '@ioredis/commands@2.4.0': {}
+
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
       minipass: 7.1.3
@@ -3126,6 +3497,8 @@ snapshots:
 
   asynckit@0.4.0: {}
 
+  avsc@5.7.9: {}
+
   balanced-match@4.0.4: {}
 
   base64-js@1.5.1: {}
@@ -3298,6 +3671,8 @@ snapshots:
 
   delayed-stream@1.0.0: {}
 
+  denque@2.1.0: {}
+
   depd@2.0.0: {}
 
   detect-libc@2.1.2: {}
@@ -3396,6 +3771,10 @@ snapshots:
       chardet: 0.7.0
       iconv-lite: 0.4.24
       tmp: 0.0.33
+
+  fast-check@4.11.0:
+    dependencies:
+      pure-rand: 8.4.2
 
   fast-deep-equal@3.1.3: {}
 
@@ -3554,6 +3933,16 @@ snapshots:
       strip-ansi: 6.0.1
       through: 2.3.8
       wrap-ansi: 6.2.0
+
+  ioredis@6.1.0(supports-color@7.2.0):
+    dependencies:
+      '@ioredis/commands': 2.4.0
+      debug: 4.4.3(supports-color@7.2.0)
+      denque: 2.1.0
+      redis-errors: 1.2.0
+      standard-as-callback: 2.1.0
+    transitivePeerDependencies:
+      - supports-color
 
   ipaddr.js@1.9.1: {}
 
@@ -3933,6 +4322,8 @@ snapshots:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
 
+  pure-rand@8.4.2: {}
+
   qs@6.17.1:
     dependencies:
       es-define-property: 1.0.1
@@ -3954,6 +4345,8 @@ snapshots:
       util-deprecate: 1.0.2
 
   readdirp@5.1.1: {}
+
+  redis-errors@1.2.0: {}
 
   reflect-metadata@0.2.2: {}
 
@@ -4092,6 +4485,8 @@ snapshots:
   split2@4.2.0: {}
 
   stackback@0.0.2: {}
+
+  standard-as-callback@2.1.0: {}
 
   statuses@2.0.2: {}
 

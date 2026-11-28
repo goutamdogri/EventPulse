@@ -1,3 +1,4 @@
+import { REPLAY_HEADERS } from '@eventpulse/retry';
 import { DLQ_HEADERS, toDlqMessage } from './dlq-publisher.js';
 
 describe('toDlqMessage', () => {
@@ -38,5 +39,16 @@ describe('toDlqMessage', () => {
       { sourceTopic: 'events.raw', groupId: 'g' },
     );
     expect(Buffer.byteLength(m.headers[DLQ_HEADERS.errorMessage] as string)).toBeLessThanOrEqual(1027);
+  });
+
+  it('S3-F6: a replayed record that fails again keeps its replay.* headers (the replay loop guard reads replay.count)', () => {
+    const replayed = { ...raw, headers: { ...raw.headers, [REPLAY_HEADERS.id]: 'r-77', [REPLAY_HEADERS.count]: Buffer.from('2'), [REPLAY_HEADERS.dlqOffset]: '9' } };
+    const m = toDlqMessage(
+      { raw: replayed, errorClass: 'PERMANENT_PARSE', errorCode: 'invalid_json', errorMessage: 'still broken', attempts: 0 },
+      { sourceTopic: 'events.raw', groupId: 'sink-postgres' },
+    );
+    expect(m.headers[REPLAY_HEADERS.count]).toEqual(Buffer.from('2'));
+    expect(m.headers[REPLAY_HEADERS.id]).toBe('r-77');
+    expect(m.headers[DLQ_HEADERS.originalOffset]).toBe('2893'); // a new dead letter of the replayed record
   });
 });

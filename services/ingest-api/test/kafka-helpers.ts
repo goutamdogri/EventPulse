@@ -1,6 +1,13 @@
 // Test helpers that read the test topic directly, to check what the API really wrote.
 import { randomUUID } from 'node:crypto';
 import { createKafka, loadKafkaClientConfig } from '@eventpulse/kafka-config';
+import { EventSerde, RegistryClient, latestSchema, looksLikeWire } from '@eventpulse/schema';
+
+/** S3-F7: decodes the API's Avro values with the real registry (Stage 2 JSON values are parsed as JSON). */
+const testSerde = new EventSerde(new RegistryClient({ url: process.env.SCHEMA_REGISTRY_URL || 'http://localhost:8081' }), {
+  subject: 'events.raw-value',
+  schema: latestSchema('events.raw-value').parsed,
+});
 
 /** The throw-away topic created by test/global-setup.ts (never events.raw). */
 export const testTopic = () => {
@@ -13,7 +20,10 @@ export interface ReadRecord {
   partition: number;
   offset: bigint;
   key: string;
+  /** The decoded envelope (Avro -> DecodedEvent, JSON -> parsed object). */
   value: any;
+  /** The value bytes as written. */
+  raw: Buffer | null;
   headers: Record<string, string>;
 }
 
@@ -59,13 +69,13 @@ export async function readFrom(
         if (offset < (start.get(partition) ?? 0n)) return;
         const headers: Record<string, string> = {};
         for (const [k, v] of Object.entries(message.headers ?? {})) headers[k] = String(v);
-        records.push({
-          partition,
-          offset,
-          key: message.key?.toString() ?? '',
-          value: JSON.parse(message.value?.toString() ?? 'null'),
-          headers,
-        });
+        const raw = message.value ?? null;
+        let value: any = null;
+        if (looksLikeWire(raw)) {
+          await testSerde.prefetch([raw]);
+          value = testSerde.decode(raw!);
+        } else value = JSON.parse(raw?.toString() ?? 'null');
+        records.push({ partition, offset, key: message.key?.toString() ?? '', value, raw, headers });
       },
     });
     const deadline = Date.now() + timeoutMs;

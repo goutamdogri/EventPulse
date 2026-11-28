@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 for port in 8000 8001; do
-  if curl -sf "localhost:$port/healthz" >/dev/null 2>&1; then echo "something is running on :$port: stop the pipeline first (make stage2-down)"; exit 1; fi
+  if curl -sf "localhost:$port/healthz" >/dev/null 2>&1; then echo "something is running on :$port: stop the pipeline first (make down)"; exit 1; fi
 done
 set -a; . infra/compose/.env; set +a
 echo "This DELETES all rows of ${POSTGRES_DB}.events, all records of events.raw and events.dlq, and group sink-postgres."

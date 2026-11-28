@@ -1,0 +1,60 @@
+{
+  "type": "record",
+  "name": "Event",
+  "namespace": "com.eventpulse",
+  "doc": "One ingested event on events.raw (S3-F7). The envelope is typed and evolvable; the tenant payload travels as canonical JSON text (payload_json) because Avro has no 'any JSON object' type.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": {
+        "type": "string",
+        "logicalType": "uuid"
+      },
+      "doc": "Client-generated UUID, lower case. With tenant_id the sink's primary key."
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "From the API key, never from the body."
+    },
+    {
+      "name": "event_type",
+      "type": "string"
+    },
+    {
+      "name": "occurred_at",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Event time (client clock), UTC epoch milliseconds."
+    },
+    {
+      "name": "received_at",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "API receipt time (server clock), UTC epoch milliseconds. Kept through retries, replays and DLQ replays."
+    },
+    {
+      "name": "schema_version",
+      "type": "int",
+      "doc": "The client's payload schema version (not the registry version)."
+    },
+    {
+      "name": "payload_json",
+      "type": "string",
+      "doc": "The tenant payload: a JSON object as canonical JSON text."
+    },
+    {
+      "name": "source",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "v2: optional origin of the event (SDK name, integration). Added with a default, so v1 and v2 readers and writers mix in both directions."
+    }
+  ]
+}

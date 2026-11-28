@@ -1,0 +1,24 @@
+{
+  "name": "@eventpulse/schema-check",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S3-F7: schema compatibility check (CI) and idempotent registration (deploy) against a Confluent Schema Registry.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "check": "node src/cli.ts check",
+    "register": "node src/cli.ts register",
+    "fixtures": "node src/cli.ts fixtures",
+    "pretest": "pnpm --filter @eventpulse/schema build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@eventpulse/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

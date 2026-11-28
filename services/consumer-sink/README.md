@@ -6,7 +6,8 @@ Stage 2 service (S2-F2). It is a member of consumer group **`sink-postgres`**: i
 events.raw (6 partitions) --> eachBatch (one partition, up to CONSUMER_MAX_BATCH_SIZE msgs)
                                  | parse every record (src/sink/parse.ts)
                                  | chunks of SINK_MAX_ROWS -> BEGIN; INSERT ... SELECT FROM unnest(...)
-                                 |                            ON CONFLICT (event_id) DO NOTHING; COMMIT
+                                 |                            ON CONFLICT (tenant_id, event_id) DO NOTHING;
+                                 |                            upsert sink_offsets; COMMIT   (Stage 3, S3-F2)
                                  | after EACH chunk's COMMIT: resolveOffset(last of chunk) + commit offsets to Kafka
                                  v
                               Postgres events (received_at from the Kafka header, stored_at = now())
@@ -15,10 +16,10 @@ events.raw (6 partitions) --> eachBatch (one partition, up to CONSUMER_MAX_BATCH
 ## Run
 
 ```bash
-make stage2-kafka-up        # 3 brokers + topics
-make stage2-migrate         # applies db/migrations (0004 adds events.stored_at)
-make stage2-build
-make stage2-consumer-start  # reads services/consumer-sink/.env (copy .env.example)
+make kafka-up               # 3 brokers + topics
+make migrate                # applies db/migrations (0004 adds events.stored_at, 0005 the (tenant_id, event_id) key)
+make build
+make consumer-start         # reads services/consumer-sink/.env (copy .env.example)
 ```
 
 Run more instances by giving each its own `METRICS_PORT`. With 6 partitions, up to 6 members get work and any extra members stay idle.
@@ -54,13 +55,44 @@ Offsets are committed **only after the database transaction commits**, one chunk
 ```
 for each chunk (SINK_MAX_ROWS messages) of a batch:
     stop if shutting down (isRunning) or the partition was revoked (isStale)
-    parse                                     <- crash points before_parse / after_parse
-    BEGIN; INSERT ... ON CONFLICT DO NOTHING; COMMIT
-                                              <- crash point after_db_commit
+    parse                                     <- crash points consumer:before-parse / consumer:after-parse
+    BEGIN                                     <- consumer:before-insert
+    INSERT ... ON CONFLICT (tenant_id, event_id) DO NOTHING RETURNING tenant_id, event_id
+    upsert sink_offsets (GREATEST)            <- consumer:after-insert-before-commit
+    COMMIT                                    <- consumer:after-db-commit
+    (only if the chunk had duplicates: compare their content_hash with the stored rows -> conflicts)
     stop (without resolving) if the partition was revoked during the write
     resolveOffset(last offset of chunk)       (the client stores last + 1 = next offset to read)
-    commit offsets to Kafka, heartbeat
+    commit offsets to Kafka, heartbeat        <- consumer:after-offset-commit
 ```
+
+### Stage 3 (S3-F2): idempotent on `(tenant_id, event_id)`
+
+- The primary key is `(tenant_id, event_id)` (migration 0005): two tenants can use the same id.
+- `DO NOTHING`, never `DO UPDATE`: the first committed copy wins and a duplicate changes nothing (not even `stored_at`).
+- A duplicate whose `content_hash` differs from the stored row (same key, other content: a producer bug) is a
+  **conflicting duplicate**: counted in `ep_sink_conflicting_duplicates_total` / `conflicting_duplicates`, never written.
+- `sink_offsets` keeps the highest stored offset per (group, topic, partition), written in the same transaction
+  (used by Stage 3 step 3 to tell reprocessed from redelivered duplicates; see ADR 0002).
+- Proof: `tests/correctness` (log replay three times, replay from mid-partition, crash matrix at every consumer point;
+  generated table in `docs/generated/crash-matrix.md`).
+
+### Stage 3 (S3-F3): duplicates are counted by cause, never silently swallowed
+
+Every duplicate the key absorbs is counted with its cause, from the record's offset:
+
+| Cause | Meaning | Typical source |
+| --- | --- | --- |
+| `reprocessed` | the offset was already stored once for this partition (`sink_offsets`) | crash between DB commit and offset commit, rebalance, offset reset |
+| `redelivered` | a new offset carrying a key that is already stored | a client retry that got past the API's idempotency (window expired, Redis lost, `fail_open`, API crash), a DLQ replay |
+| `unknown` | `sink_offsets` could not be read for that chunk | Postgres trouble; counted, never dropped |
+
+- Metrics: `ep_sink_duplicates_total{cause}`, `ep_sink_reprocessed_messages_total{partition}`, `ep_sink_rows_attempted_total`,
+  `ep_sink_rows_inserted_total`, `ep_sink_conflicting_duplicates_total` (the Stage 2 `ep_consumer_*` series stay for the
+  Stage 2 dashboards). `/debug/stats`: `duplicates_by_cause`, `reprocessed_messages`, `reprocessed_by_partition`.
+- One structured log line per chunk that had duplicates: `{"msg":"duplicates","partition":..,"duplicates":..,"reprocessed":..,"redelivered":..,"conflicts":..}`.
+- Dashboard: `infra/observability/dashboards/stage-3/correctness.json` (duplicates by layer: API replayed vs sink by cause).
+- Reconciliation of a run: `make audit` (checks G, J "unexplained difference", K). Proof: `tests/correctness/test/duplicates.e2e-spec.ts`.
 
 | Crash point | Rows in DB | Offset committed | Result after restart |
 | --- | --- | --- | --- |
@@ -88,7 +120,8 @@ Measured with real SIGKILLs (`test/commit-protocol.e2e-spec.ts`, 5,000 events, c
 
 ### Debug hooks (never set in normal runs)
 
-- `CRASH_AT=before_parse|after_parse|after_db_commit` with `CRASH_AFTER_BATCHES=N`: SIGKILL this process at that point on its Nth batch. Refused unless `DEBUG_FAULTS=true`.
+- `FAULTS=<point>[@N|@bN]` (Stage 3, `packages/fault-injector`): SIGKILL this process at a named point on its Nth hit (`@N`) or in its Nth batch (`@bN`). `FAULT_ERRORS=<point>=<CODE>[xN|x*][:marker=TEXT]` makes that point throw an error with that code. `GET/POST/DELETE /debug/faults` show, arm and disarm them at runtime. All refused unless `DEBUG_FAULTS=true`.
+- `CRASH_AT=before_parse|after_parse|after_db_commit` with `CRASH_AFTER_BATCHES=N` (Stage 2 form, still accepted): same as `FAULTS=consumer:<point>@bN`.
 - `SINK_PROCESSING_DELAY_MS`: artificial work per chunk, before the DB write.
 - `SINK_PROCESSING_DELAY_CHUNKS` / `SINK_PROCESSING_DELAY_SKIP_CHUNKS` (K8): delay only that many chunks (0 = every chunk), after skipping the first N.
 - `CONSUMER_TOPIC`: read another topic (tests use a throw-away topic per run).
@@ -97,26 +130,60 @@ Measured with real SIGKILLs (`test/commit-protocol.e2e-spec.ts`, 5,000 events, c
 
 A record that fails **on its own** goes to `events.dlq`, and the offset moves past it. A database that is **down** never sends anything to the DLQ. Before the fix, one bad record blocked its partition forever: see [the before/after note](../../notebook/stage-2/s2-f4-poison-before-fix.md).
 
+Stage 3 (S3-F5): one classifier for the whole system (`packages/retry`), and retry tiers instead of in-handler retries.
+
 | Class | Examples | What the sink does |
 | --- | --- | --- |
-| `PERMANENT_PARSE` | invalid JSON, bad UUID, bad timestamp, type > 100 chars, missing tenant / `received_at` header | dead-letter at once (`dlq.attempts=1`) |
-| `PERMANENT_DB` | Postgres rejects this row: `22xxx` (e.g. `22P05` `\u0000` in jsonb, `22001` too long), `23xxx` | bisect the chunk to isolate the row, store the good rows, retry the bad row `SINK_MAX_RETRIES` times with backoff, then dead-letter it |
-| `UNKNOWN` | an error with no recognized code | same as `PERMANENT_DB` |
-| `TRANSIENT_DB` | DB unreachable / overloaded / restarting: connection errors, `08xxx`, `53xxx`, `57P0x`, `57014`, `40001`, `40P01` | **never DLQ.** Retry with backoff for `SINK_TRANSIENT_RETRY_WINDOW_MS`, then pause the partition for `SINK_PAUSE_MS` and read the chunk again. No hot loop, no loss |
-| `SYSTEMIC_DB` | every row would fail: `42xxx` (missing column...), `28xxx`, `3D000`, `0A`, `XX` | treated like `TRANSIENT_DB`, so a schema mistake doesn't dead-letter the whole topic. Needs a human |
+| `PERMANENT_PARSE` | invalid JSON, bad UUID, bad timestamp, not Avro / Avro decode error, missing `received_at` | dead-letter at once (`dlq.attempts=0`) |
+| `PERMANENT_SCHEMA` | unknown schema id, writer schema the reader cannot resolve | dead-letter at once |
+| `PERMANENT_DB` | Postgres rejects this row: `22xxx` (e.g. `22P05` `\u0000` in jsonb), `23xxx` | bisect the chunk to isolate the row, store the good rows, dead-letter the bad row (retrying bad data never helps) |
+| `TRANSIENT_RECORD` | `40001` serialization failure, `40P01` deadlock, `57014` statement timeout | the whole chunk is retried in-process `RETRY_INPROCESS_ATTEMPTS` (2) times; a row still failing on its own goes to **retry tier 1** |
+| `UNKNOWN` | an error with no recognized code | retry tiers, like `TRANSIENT_RECORD` |
+| `TRANSIENT_SYSTEMIC` | DB / registry unreachable, overloaded, restarting: connection errors, `08xxx`, `53xxx`, `57P0x` | **never a retry topic, never DLQ.** Backoff for `SINK_TRANSIENT_RETRY_WINDOW_MS`, then pause the partition for `SINK_PAUSE_MS` and read the chunk again |
+| `SYSTEMIC_CONFIG` | every row would fail: `42xxx` (missing column...), `28xxx`, `3D000`, `0A`, `XX` | like `TRANSIENT_SYSTEMIC` (a schema mistake must not dead-letter the topic). Needs a human |
 
-Order per chunk: write the good rows (DB commit) → publish dead letters and wait for the ack (`acks=all`) → only then commit the offset. If the DLQ publish fails, nothing is committed and the chunk is retried, so a DLQ record can be duplicated (noted for Stage 3).
+**Retry tiers** `events.retry.1..3` (delays `RETRY_TIER_DELAYS_MS` 5 s / 60 s / 10 min, equal jitter): the record keeps its original
+bytes and headers plus `retry.attempt`, `retry.not_before`, `retry.original_{topic,partition,offset}`, `retry.first_failed_at`,
+`retry.last_error_{class,code,message}`. The retry-tier consumer (group `<CONSUMER_GROUP_ID>-retry`, same process with
+`SINK_ROLE=both`) **pauses** a partition until its head record is due (no sleeping), then runs the same parse + write: stored, or
+the next tier, or the DLQ after the last tier (`dlq.attempts=3`). At most `RETRY_MAX_RATE_PER_S` records/s go to the tiers; above
+that the chunk pauses instead (a retry storm is contained, C9). `RETRY_TOPICS_ENABLED=false` = the Stage 2 behavior.
 
-DLQ record: **value = the original bytes, key = the original key**, original headers kept, plus `dlq.original_topic`, `dlq.original_partition`, `dlq.original_offset`, `dlq.consumer_group`, `dlq.error_class`, `dlq.error_code`, `dlq.error_message` (≤ 1 KB), `dlq.attempts`, `dlq.failed_at`.
+Order per chunk: write the good rows (DB commit) → retry records to their tier (acked) → dead letters to `events.dlq` (acked) →
+`dlq_meta` row (one per source record, `ON CONFLICT DO NOTHING`) → only then commit the offset. A crash in between re-publishes;
+`dlq_meta` keeps one row and counts the DLQ duplicate (`ep_dlq_duplicates_total`). Crash points: `retry:*`, `dlq:*`.
+
+DLQ record: **value = the original bytes, key = the original key**, original headers kept (`retry.*` dropped), plus
+`dlq.original_topic/partition/offset` (where it was FIRST consumed, also for a record that failed on a tier), `dlq.failed_topic`,
+`dlq.consumer_group`, `dlq.error_class`, `dlq.error_code`, `dlq.error_message` (≤ 1 KB), `dlq.attempts`, `dlq.first_failed_at`,
+`dlq.failed_at`.
+
+Metrics: `ep_retry_published_total{tier}`, `ep_retry_processed_total{tier,result}`, `ep_retry_lag_seconds{tier}`,
+`ep_retry_paused_partitions`, `ep_retry_rate_limited_total`, `ep_retry_routed_total`, `ep_dlq_published_total{error_class}`,
+`ep_dlq_duplicates_total`, `ep_dlq_size`, `ep_dlq_oldest_unreplayed_age_seconds`. Invariant: consumed = inserted + duplicates +
+dlq + retried. ADR 0006; proof `tests/correctness/test/retry.e2e-spec.ts`.
 
 Tools:
 
 ```bash
 scripts/produce-poison.sh --kind invalid-json|bad-uuid|oversized-field|constraint [--key KEY] [--topic T]
 scripts/dlq-peek.sh [N] [--topic events.dlq]
+pnpm dlq-replay stats|list|show|replay|reindex   # S3-F6 triage and safe replay (dry run by default)
 ```
 
+Replay (S3-F6, [runbook](../../docs/runbooks/dlq-triage-and-replay.md)) re-injects a dead letter into its source topic. The record
+carries its original key, bytes and headers plus `replay.id`, `replay.count`, `replay.dlq_partition` and `replay.dlq_offset`. The
+sink treats it like any other record: the `(tenant_id, event_id)` key turns a replay of a stored event into a counted duplicate.
+If the replayed record fails again, its new dead letter keeps the `replay.*` headers. That is how the tool's loop guard
+(`DLQ_MAX_REPLAYS`) counts rounds.
+
 `SINK_DLQ_ENABLED=false` brings back the blocking behavior on demand (used by a test, and for K6).
+
+## Late and out-of-order events (S3-F8)
+
+- **The sink is order-insensitive.** Every write is keyed (`ON CONFLICT (tenant_id, event_id) DO NOTHING`, `GREATEST` on `sink_offsets`), so shuffled, late, retried and replayed events end up as the same stored set. The full review of every write path, and the one documented exception (conflicting duplicates: first committed wins, counted), is in [ADR 0008](../../docs/adr/0008-event-time-and-order-insensitivity.md).
+- **No clock-skew check here.** The API checks the bounds against `received_at`; the sink stores whatever it gets, so a replay of year-old data is still stored. `received_at` comes from the record, never from the sink's clock.
+- **`ep_sink_lateness_seconds`:** `received_at - occurred_at` of each newly stored row (1 s to 30 days buckets).
 
 ## Other behavior
 

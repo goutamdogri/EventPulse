@@ -1,0 +1,53 @@
+{
+  "single_leader_failover": {
+    "changes": 1000,
+    "messages": 1000,
+    "republished_after_kill": 0,
+    "order_violations": 0,
+    "published_by_standby": 659,
+    "measured_at": "2026-11-28T06:19:42.266Z"
+  },
+  "multi_mode_ordering": {
+    "changes": 1000,
+    "messages": 1000,
+    "order_violations": 0,
+    "published_per_relay": [
+      505,
+      495
+    ],
+    "consumer": {
+      "applied": 1000,
+      "duplicate": 0,
+      "stale": 0
+    },
+    "final_version": 1000,
+    "measured_at": "2026-11-28T06:19:52.759Z"
+  },
+  "publish_latency_listen": {
+    "changes": 100,
+    "p50_ms": 7,
+    "p99_ms": 55.6,
+    "max_ms": 56.3,
+    "note": "created_at is the transaction start of the change, published_at the transaction start of the publishing cycle",
+    "measured_at": "2026-11-28T06:20:00.998Z"
+  },
+  "publish_latency_poll_200ms": {
+    "changes": 100,
+    "p50_ms": 122.8,
+    "p99_ms": 228.9,
+    "max_ms": 236.5,
+    "note": "created_at is the transaction start of the change, published_at the transaction start of the publishing cycle",
+    "measured_at": "2026-11-28T06:20:06.156Z"
+  },
+  "kafka_down_30s": {
+    "changes": 705,
+    "backlog_max": 650,
+    "oldest_age_max_s": 29.8,
+    "failed_cycles": 9,
+    "drain_ms_after_brokers_healthy": 5,
+    "republished": 0,
+    "lost": 0,
+    "order_violations": 0,
+    "measured_at": "2026-11-28T06:21:07.439Z"
+  }
+}

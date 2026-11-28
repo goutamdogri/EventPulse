@@ -1,0 +1,21 @@
+{
+  "name": "@eventpulse/guarantee-check",
+  "version": "0.0.1",
+  "private": true,
+  "description": "S3-F9: every claim in docs/delivery-guarantees.md maps to a passing automated test; the crash matrix is complete, current and loss-free.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "check": "node src/cli.ts check",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@eventpulse/fault-injector": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

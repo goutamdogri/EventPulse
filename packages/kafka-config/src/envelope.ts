@@ -1,8 +1,9 @@
 // The message contract on events.raw, shared by the producer (ingest-api) and the consumers.
 //
 //   key     tenant_id (default) or event_id      KAFKA_KEY_MODE=tenant|event
-//   value   JSON: { event_id, tenant_id, type, occurred_at, schema_version, payload }
-//   headers received_at (ISO, API receipt time), schema_version, request_id
+//   value   JSON: { event_id, tenant_id, type, occurred_at, schema_version, payload }          (Stage 2, legacy)
+//           or Avro in the Confluent wire format (Stage 3, S3-F7: packages/schema), via `serialize`
+//   headers received_at (ISO, API receipt time), schema_version, request_id, content-type (Stage 3)
 //
 // Decoding (and the poison handling that goes with it) lives in the consumer, not here.
 
@@ -12,6 +13,8 @@ export type KeyMode = (typeof KEY_MODES)[number];
 export const HEADER_RECEIVED_AT = 'received_at';
 export const HEADER_SCHEMA_VERSION = 'schema_version';
 export const HEADER_REQUEST_ID = 'request_id';
+export const HEADER_CONTENT_TYPE = 'content-type';
+export const CONTENT_TYPE_JSON = 'application/vnd.eventpulse.event+json';
 
 export interface EventEnvelope {
   event_id: string;
@@ -36,6 +39,8 @@ export interface EncodeInput {
   receivedAt: Date;
   requestId: string;
   keyMode: KeyMode;
+  /** Stage 3: encode the value another way (Avro). Default: the Stage 2 JSON value. */
+  serialize?: (envelope: EventEnvelope, receivedAt: Date) => { value: Buffer; contentType: string };
 }
 
 export function encodeEvent(i: EncodeInput): EncodedEvent {
@@ -48,11 +53,13 @@ export function encodeEvent(i: EncodeInput): EncodedEvent {
     payload: i.event.payload,
   };
   const key = i.keyMode === 'tenant' ? i.tenantId : i.event.event_id;
-  const value = Buffer.from(JSON.stringify(envelope));
+  const s = i.serialize ? i.serialize(envelope, i.receivedAt) : { value: Buffer.from(JSON.stringify(envelope)), contentType: CONTENT_TYPE_JSON };
+  const value = s.value;
   const headers = {
     [HEADER_RECEIVED_AT]: i.receivedAt.toISOString(),
     [HEADER_SCHEMA_VERSION]: String(i.event.schema_version),
     [HEADER_REQUEST_ID]: i.requestId,
+    [HEADER_CONTENT_TYPE]: s.contentType,
   };
   let sizeBytes = Buffer.byteLength(key) + value.length;
   for (const [k, v] of Object.entries(headers)) sizeBytes += Buffer.byteLength(k) + Buffer.byteLength(v);

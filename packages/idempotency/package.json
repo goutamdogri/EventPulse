@@ -1,0 +1,29 @@
+{
+  "name": "@eventpulse/idempotency",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Canonical JSON + content hashing, the API idempotency state machine and its Redis store (Stage 3, S3-F1/S3-F2).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "fast-check": "^4.11.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "ioredis": "^6.1.0"
+  }
+}
