@@ -12,6 +12,7 @@ import { SchemaUnavailableError } from '../schema/schema.service.js';
 import { KafkaUnavailableError, OverloadedError } from '../kafka/errors.js';
 import { BatcherClosedError, MessageTooLargeError } from '../kafka/micro-batcher.js';
 import { MetricsService } from '../observability/metrics.service.js';
+import { InvalidOccurredAtError, OccurredAtOutOfRangeError } from '../events/event-time.js';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -44,6 +45,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
     if (err instanceof IdempotencyKeyReusedError) {
       return res.status(422).json({ statusCode: 422, error: 'Unprocessable Entity', message: err.message, reason: 'idempotency_key_reused' });
+    }
+    // S3-F8 clock-skew bounds: the event is well-formed but its occurred_at is implausible. Not retryable as is.
+    if (err instanceof OccurredAtOutOfRangeError) {
+      return res.status(422).json({ statusCode: 422, error: 'Unprocessable Entity', message: err.message, reason: err.reason });
+    }
+    if (err instanceof InvalidOccurredAtError) {
+      return res.status(400).json({ statusCode: 400, error: 'Bad Request', message: err.message });
     }
     if (err instanceof InvalidIdempotencyKeyError || err instanceof CanonicalJsonError || err instanceof AvroEncodeError) {
       return res.status(400).json({ statusCode: 400, error: 'Bad Request', message: err.message });

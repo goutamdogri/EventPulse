@@ -179,6 +179,12 @@ If the replayed record fails again, its new dead letter keeps the `replay.*` hea
 
 `SINK_DLQ_ENABLED=false` brings back the blocking behavior on demand (used by a test, and for K6).
 
+## Late and out-of-order events (S3-F8)
+
+- **The sink is order-insensitive.** Every write is keyed (`ON CONFLICT (tenant_id, event_id) DO NOTHING`, `GREATEST` on `sink_offsets`), so shuffled, late, retried and replayed events end up as the same stored set. The full review of every write path, and the one documented exception (conflicting duplicates: first committed wins, counted), is in [ADR 0008](../../docs/adr/0008-event-time-and-order-insensitivity.md).
+- **No clock-skew check here.** The API checks the bounds against `received_at`; the sink stores whatever it gets, so a replay of year-old data is still stored. `received_at` comes from the record, never from the sink's clock.
+- **`ep_sink_lateness_seconds`:** `received_at - occurred_at` of each newly stored row (1 s to 30 days buckets).
+
 ## Other behavior
 
 - **Duplicates are counted, not hidden.** `attempted - inserted` = records absorbed by `ON CONFLICT` (reprocessing or client retries).

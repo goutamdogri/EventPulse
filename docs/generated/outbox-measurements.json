@@ -4,16 +4,16 @@
     "messages": 1000,
     "republished_after_kill": 0,
     "order_violations": 0,
-    "published_by_standby": 662,
-    "measured_at": "2026-11-28T03:59:07.145Z"
+    "published_by_standby": 663,
+    "measured_at": "2026-11-28T05:12:36.831Z"
   },
   "multi_mode_ordering": {
     "changes": 1000,
     "messages": 1000,
     "order_violations": 0,
     "published_per_relay": [
-      505,
-      495
+      500,
+      500
     ],
     "consumer": {
       "applied": 1000,
@@ -21,33 +21,33 @@
       "stale": 0
     },
     "final_version": 1000,
-    "measured_at": "2026-11-28T03:59:17.872Z"
+    "measured_at": "2026-11-28T05:12:47.635Z"
   },
   "publish_latency_listen": {
     "changes": 100,
-    "p50_ms": 7.2,
-    "p99_ms": 58.2,
-    "max_ms": 59.3,
+    "p50_ms": 6.9,
+    "p99_ms": 44.1,
+    "max_ms": 46.3,
     "note": "created_at is the transaction start of the change, published_at the transaction start of the publishing cycle",
-    "measured_at": "2026-11-28T03:59:26.130Z"
+    "measured_at": "2026-11-28T05:12:55.766Z"
   },
   "publish_latency_poll_200ms": {
     "changes": 100,
-    "p50_ms": 127.3,
-    "p99_ms": 259.9,
-    "max_ms": 283.5,
+    "p50_ms": 109.9,
+    "p99_ms": 234.2,
+    "max_ms": 237.4,
     "note": "created_at is the transaction start of the change, published_at the transaction start of the publishing cycle",
-    "measured_at": "2026-11-28T03:59:31.283Z"
+    "measured_at": "2026-11-28T05:13:00.900Z"
   },
   "kafka_down_30s": {
-    "changes": 715,
-    "backlog_max": 662,
-    "oldest_age_max_s": 30,
-    "failed_cycles": 10,
-    "drain_ms_after_brokers_healthy": 6,
+    "changes": 710,
+    "backlog_max": 655,
+    "oldest_age_max_s": 29.7,
+    "failed_cycles": 9,
+    "drain_ms_after_brokers_healthy": 9,
     "republished": 0,
     "lost": 0,
     "order_violations": 0,
-    "measured_at": "2026-11-28T03:50:39.872Z"
+    "measured_at": "2026-11-28T05:14:03.896Z"
   }
 }

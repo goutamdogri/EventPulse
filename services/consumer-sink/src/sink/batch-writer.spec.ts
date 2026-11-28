@@ -47,7 +47,7 @@ describe('insertSql', () => {
     expect(sql).toContain('ON CONFLICT (tenant_id, event_id) DO NOTHING');
     expect(sql).not.toContain('DO UPDATE');
     expect(sql).toContain('content_hash');
-    expect(sql).toMatch(/RETURNING tenant_id, event_id, received_at/);
+    expect(sql).toMatch(/RETURNING tenant_id, event_id, received_at, occurred_at/);
   });
 
   it('dedup off (K5, debug-only): plain INSERT into the named table', () => {

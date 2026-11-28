@@ -189,7 +189,7 @@ export async function handleBatch(ctx: BatchContext, deps: HandlerDeps): Promise
     writer: {
       writeChunk: async (rows) => {
         const w = await deps.writer.writeChunk(rows);
-        stats.observeDbWrite(w.durationMs, w.connectMs ?? 0, w.freshnessS ?? []);
+        stats.observeDbWrite(w.durationMs, w.connectMs ?? 0, w.freshnessS ?? [], w.latenessS ?? []);
         if (w.conflicts?.length) stats.countConflicts(w.conflicts);
         if (w.conflictCheckFailed) stats.conflictCheckErrors++;
         return w;

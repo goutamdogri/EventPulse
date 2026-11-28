@@ -221,10 +221,11 @@ export class SinkStats {
     this.m.processing.observe(processingMs / 1000);
   }
 
-  observeDbWrite(ms: number, connectMs: number, freshnessS: number[]) {
+  observeDbWrite(ms: number, connectMs: number, freshnessS: number[], latenessS: number[] = []) {
     this.m.dbWrite.observe(ms / 1000);
     this.m.pgConnectWait.observe(connectMs / 1000);
     for (const f of freshnessS) this.m.freshness.observe(f);
+    for (const l of latenessS) this.m.lateness.observe(Math.max(0, l));
   }
 
   observeCommit(ms: number) {
@@ -457,6 +458,14 @@ function createMetrics(registry: Registry, st: SinkStats, live?: () => { pgTotal
     dbWrite: new Histogram({ name: 'ep_consumer_db_write_seconds', help: 'One write transaction (BEGIN..COMMIT).', buckets: SECONDS_BUCKETS, registers }),
     pgConnectWait: new Histogram({ name: 'ep_pg_pool_connect_wait_seconds', help: 'Time to get a pool connection.', buckets: SECONDS_BUCKETS, registers }),
     commit: new Histogram({ name: 'ep_consumer_commit_seconds', help: 'Offset commit latency (successful commits).', buckets: SECONDS_BUCKETS, registers }),
+    // S3-F8: how late stored events were when the API received them (received_at - occurred_at), per new row.
+    // Same buckets as the API's ep_event_lateness_seconds (1 s .. 30 days); a client clock ahead counts as 0.
+    lateness: new Histogram({
+      name: 'ep_sink_lateness_seconds',
+      help: 'received_at - occurred_at of newly stored rows (lateness at the API, as stored). Late events are stored regardless.',
+      buckets: [1, 5, 15, 60, 300, 900, 3600, 21_600, 86_400, 259_200, 604_800, 2_592_000],
+      registers,
+    }),
     freshness: new Histogram({ name: 'ep_event_freshness_seconds', help: 'End-to-end visibility: DB commit time - received_at (API), per newly inserted row.', buckets: FRESHNESS_BUCKETS, registers }),
   };
   // Known label values start at 0, so a clean run shows 0 on the dashboard instead of "No data".

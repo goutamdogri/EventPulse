@@ -96,9 +96,15 @@ export interface FixedEvent {
   payload: Record<string, unknown>;
 }
 
+/**
+ * occurred_at of fixed events: one day before this test process started, fixed for the process. Fixed, so a resend
+ * is a true duplicate; relative to now, so events sent through the API stay inside its clock-skew bounds (S3-F8).
+ */
+export const FIXED_OCCURRED_AT = new Date(Date.now() - 86_400_000).toISOString();
+
 /** N events with FIXED content (so producing them again is a true duplicate, not a conflicting one). */
 export const fixedEvents = (n: number, tag = 'fixed'): FixedEvent[] =>
-  Array.from({ length: n }, (_, i) => ({ event_id: randomUUID(), type: `${tag}.event`, occurred_at: '2026-11-27T10:00:00.000Z', schema_version: 1, payload: { i } }));
+  Array.from({ length: n }, (_, i) => ({ event_id: randomUUID(), type: `${tag}.event`, occurred_at: FIXED_OCCURRED_AT, schema_version: 1, payload: { i } }));
 
 /** Produce exactly these events (encoded like the API does), keyed by event_id; returns when Kafka acknowledged all. */
 export async function produceFixed(topic: string, tenant: string, events: FixedEvent[]): Promise<void> {

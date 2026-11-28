@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { encodeEvent } from '@eventpulse/kafka-config';
 import { FaultInjector } from '@eventpulse/fault-injector';
@@ -10,6 +10,8 @@ import { FAULT_INJECTOR, IDEMPOTENCY } from '../idempotency/idempotency.module.j
 import { IdempotencyInProgressError, IdempotencyKeyReusedError } from '../idempotency/errors.js';
 import { CreateEventDto } from './create-event.dto.js';
 import { SchemaService } from '../schema/schema.service.js';
+import { EventTimeMetrics } from './event-time-metrics.js';
+import { OccurredAtOutOfRangeError, checkSkew, normalizeOccurredAt } from './event-time.js';
 
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -27,6 +29,7 @@ export class EventsService {
     @Inject(IDEMPOTENCY) private readonly idem: Idempotency,
     @Inject(FAULT_INJECTOR) private readonly faults: FaultInjector,
     private readonly schema: SchemaService,
+    @Optional() private readonly time?: EventTimeMetrics,
   ) {}
 
   /**
@@ -41,7 +44,17 @@ export class EventsService {
    *  - produce fails ambiguously (send timeout: Kafka may have it): the key is released, the retry may produce a
    *    second copy, absorbed by the sink.
    */
-  async ingest(tenantId: string, e: CreateEventDto, receivedAt: Date, opts: { idempotencyKey?: string; requestId?: string } = {}): Promise<IngestResult> {
+  async ingest(tenantId: string, input: CreateEventDto, receivedAt: Date, opts: { idempotencyKey?: string; requestId?: string } = {}): Promise<IngestResult> {
+    // S3-F8: occurred_at normalized (UTC, milliseconds) and bounded against received_at BEFORE anything else, so a
+    // rejected event consumes no idempotency key and produces nothing. The normalized value is hashed and stored.
+    const e: CreateEventDto = { ...input, occurred_at: normalizeOccurredAt(input.occurred_at) };
+    let latenessS: number;
+    try {
+      latenessS = checkSkew(e.occurred_at, receivedAt, this.cfg.eventTime);
+    } catch (err) {
+      if (err instanceof OccurredAtOutOfRangeError) this.time?.reject(err.reason);
+      throw err;
+    }
     const key = opts.idempotencyKey !== undefined ? validateIdempotencyKey(opts.idempotencyKey) : e.event_id.toLowerCase();
     const hash = eventContentHash({
       tenant_id: tenantId,
@@ -66,6 +79,7 @@ export class EventsService {
       throw err;
     }
     this.faults.hit('api:after-produce-before-complete');
+    this.time?.observe(latenessS);
     if (ticket) await this.idem.complete(ticket, e.event_id);
     this.faults.hit('api:after-complete-before-response');
     return { event_id: e.event_id, replayed: false };

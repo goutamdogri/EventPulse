@@ -2164,6 +2164,165 @@
           "legendFormat": "{{result}}"
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Event time (S3-F8): late and out-of-order events are stored; lateness and skew rejections",
+      "id": 44,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 89
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Lateness (received_at - occurred_at)",
+      "description": "How late client events arrive. API = accepted requests; sink = rows actually stored (retries and replays included, with their original received_at). Log scale: seconds to days.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 45,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 90
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(ep_event_lateness_seconds_bucket{job=\"eventpulse-nodejs\"}[5m])))",
+          "legendFormat": "API p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ep_event_lateness_seconds_bucket{job=\"eventpulse-nodejs\"}[5m])))",
+          "legendFormat": "API p99"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "C",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(ep_sink_lateness_seconds_bucket{job=\"eventpulse-consumer-sink\"}[5m])))",
+          "legendFormat": "sink p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "D",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ep_sink_lateness_seconds_bucket{job=\"eventpulse-consumer-sink\"}[5m])))",
+          "legendFormat": "sink p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Clock-skew rejections and clients ahead",
+      "description": "422 occurred_at_in_future / occurred_at_too_old per second, and accepted events whose clock is ahead of the server (within OCCURRED_AT_MAX_FUTURE_S).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 46,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 90
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (reason) (rate(ep_event_rejected_total{job=\"eventpulse-nodejs\"}[1m]))",
+          "legendFormat": "rejected: {{reason}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "sum(rate(ep_event_ahead_total{job=\"eventpulse-nodejs\"}[1m]))",
+          "legendFormat": "accepted, clock ahead"
+        }
+      ]
     }
   ],
   "templating": {

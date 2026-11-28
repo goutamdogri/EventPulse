@@ -13,7 +13,7 @@ import type { Pool } from 'pg';
 import { createKafka } from '@eventpulse/kafka-config';
 import type { KafkaClientConfig, Producer } from '@eventpulse/kafka-config';
 import { DLQ_HEADERS, originalHeaders, truncate } from '@eventpulse/retry';
-import type { ErrorClass, Origin } from '@eventpulse/retry';
+import type { ErrorClass, Headers, Origin } from '@eventpulse/retry';
 import type { RawMessage } from './parse.js';
 
 export interface DeadLetter {
@@ -43,8 +43,15 @@ export function originOf(d: DeadLetter, ctx: DlqContext, now: Date): Origin {
   return d.origin ?? { topic: ctx.sourceTopic, partition: d.raw.partition, offset: d.raw.offset, firstFailedAt: now.toISOString() };
 }
 
+/** One DLQ record. headers: the original ones (any name, replay.* included) + the dlq.* set. */
+export interface DlqMessage {
+  key: RawMessage['key'];
+  value: Buffer | null;
+  headers: Headers;
+}
+
 /** Builds the DLQ record for one dead letter (pure, unit-tested). */
-export function toDlqMessage(d: DeadLetter, ctx: DlqContext, now = new Date()) {
+export function toDlqMessage(d: DeadLetter, ctx: DlqContext, now = new Date()): DlqMessage {
   const origin = originOf(d, ctx, now);
   return {
     key: d.raw.key ?? null,

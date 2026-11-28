@@ -1,6 +1,6 @@
 # EventPulse Ingest API Contract
 
-*Current as of Stage 3 (S3-F1: idempotent ingest, S3-F7: Avro on events.raw). Each stage that changes a guarantee updates this file.*
+*Current as of Stage 3 (S3-F1: idempotent ingest, S3-F7: Avro on events.raw, S3-F8: time fields, S3-F4: tenant config admin API). Each stage that changes a guarantee updates this file.*
 
 ## `POST /v1/events`
 
@@ -15,7 +15,7 @@
 | --- | --- | --- |
 | `event_id` | string | UUID. The client generates it and reuses it on every retry of the same event. |
 | `type` | string | 1 to 100 characters |
-| `occurred_at` | string | ISO 8601 timestamp |
+| `occurred_at` | string | RFC 3339 date-time **with a zone** (`Z` or `±hh:mm`). Normalized to UTC, kept to the millisecond. Must be within 300 s ahead / 365 days behind the server time. See "Time fields". |
 | `schema_version` | integer | ≥ 1 |
 | `payload` | object | JSON object (not an array) |
 
@@ -28,7 +28,7 @@
 | 401 | Missing or unknown API key. Nothing was written. |
 | 409 + `Retry-After` | `reason: "idempotency_in_progress"`: a request with the same key and the same payload is still being written. Nothing new was written. Retry after `Retry-After` seconds with the same key. |
 | 413 | Body larger than `BODY_LIMIT` (rejected at the edge, Kafka never sees it), or an event larger than the batch byte cap. |
-| 422 | `reason: "idempotency_key_reused"`: this key was already used with a **different** payload. Nothing was written. This is a client bug (a key reused for another request): do not retry, fix the key. |
+| 422 | `reason: "idempotency_key_reused"`: this key was already used with a **different** payload. Nothing was written. This is a client bug (a key reused for another request): do not retry, fix the key. `reason: "occurred_at_in_future"` / `"occurred_at_too_old"` (S3-F8): `occurred_at` is outside the clock-skew bounds; nothing was written and the idempotency key is NOT used, so the corrected event can be sent with the same `event_id`. Fix the client clock; do not retry as is. |
 | 500 | Unexpected error (a bug). The event **may or may not** have been written. |
 | 503 + `Retry-After` | Kafka unavailable, or the ingest queue is full. Body: `{ statusCode: 503, error, message, reason }` with `reason` = `kafka_unavailable`, `overloaded`, `shutting_down`, `idempotency_unavailable` (Redis down and `IDEM_FAILURE_POLICY=closed`) or `schema_unavailable` (the API has not found its writer schema id yet: registry unreachable at startup, or the schema is not registered). The event **may or may not** have been written (a timed-out or failed batch can be partly in the log). |
 
@@ -67,6 +67,49 @@ The same `(tenant, Idempotency-Key or event_id)` accepted repeatedly produces **
 - `/readyz` does not include Redis (with the default policy the API works without it).
 
 Metrics: `ep_idem_requests_total{result}` (`new`, `replayed`, `in_progress`, `payload_mismatch`, `fail_open`, `fail_closed`, `disabled`), `ep_idem_complete_failures_total`, `ep_idem_redis_latency_seconds`, `ep_idem_redis_errors_total`; `/debug/stats` section `idempotency`.
+
+## Time fields (S3-F8)
+
+Every stored event has three times:
+
+| Field | Set by | Rule |
+| --- | --- | --- |
+| `occurred_at` | the client (event time) | See the rules below. |
+| `received_at` | the API (server clock) | Set when the request is handled. **Never** taken from the client. It travels inside the record (Avro value, and a header), so retry tiers and DLQ replays **keep the original `received_at`**: a replayed event does not look new. |
+| `stored_at` | the sink | Postgres commit time. |
+
+Rules for `occurred_at`:
+
+- It must be an RFC 3339 date-time with a zone. A time without a zone is a **400**, because it would be read as the API host's local time.
+- It is normalized to UTC: `2026-11-28T11:30:00+02:30` is stored as `2026-11-28T09:00:00.000Z`.
+- **Precision: milliseconds.** More fractional digits are accepted and **truncated, never rounded**: `09:00:00.123999Z` is stored as `09:00:00.123Z`. JavaScript `Date` and Avro `timestamp-millis` cannot hold more.
+- The normalized value is what is hashed for idempotency. The same instant written in two zone offsets is therefore the same event content.
+
+What the differences between the three times mean:
+
+| Difference | Meaning | Metrics |
+| --- | --- | --- |
+| `received_at - occurred_at` | lateness of the client: offline buffering, a mobile app sending hours later | `ep_event_lateness_seconds` at the API, `ep_sink_lateness_seconds` at the sink |
+| `stored_at - received_at` | delay of the pipeline | `ep_event_freshness_seconds` |
+
+### Clock-skew bounds (422)
+
+| Condition | Response |
+| --- | --- |
+| `occurred_at` more than `OCCURRED_AT_MAX_FUTURE_S` (300 s) **after** `received_at` | **422** `occurred_at_in_future`: the client clock is ahead. |
+| `occurred_at` more than `OCCURRED_AT_MAX_PAST_DAYS` (365 days) **before** `received_at` | **422** `occurred_at_too_old`: the clock is broken (1970, unset device clocks). |
+
+- Both limits are inclusive: exactly 300 s ahead, or exactly 365 days old, is accepted.
+- Rejections are counted in `ep_event_rejected_total{reason="future|too_old"}`.
+- An accepted event ahead of the server (within the bound) is counted in `ep_event_ahead_total`.
+- The bounds are checked **only at the API**, against `received_at`. The sink stores whatever it gets, so an old record replayed a year later, or one that waited on a retry tier, is still stored.
+
+### Late and out-of-order events are stored correctly
+
+- **Arrival order never changes what is stored.** Events are stored as a set keyed by `(tenant_id, event_id)`: shuffled, delayed by minutes, hours or a day, retried after newer events, or replayed from the DLQ.
+- **Order, lateness and duplicates are invisible in storage.** Both `occurred_at` and `received_at` are kept exactly. This is proven by a property test over 1,000+ random cases against a reference model, and end to end through the pipeline.
+- **Query by event time with `occurred_at`.** It is indexed per tenant: `events_tenant_time_idx (tenant_id, occurred_at)`.
+- **The one order-dependent case:** the same `(tenant, event_id)` sent with **different content**, which is a client bug. The first copy committed wins, and later ones are counted as conflicts, never overwritten. Within the dedup window the API already rejects it with 422 `idempotency_key_reused`.
 
 ## Wire format on `events.raw` (S3-F7)
 

@@ -87,7 +87,9 @@ describe('S3-F7 pipeline: Avro on events.raw (API -> Kafka -> sink)', () => {
     await waitReady(s);
     return s;
   };
-  const ev = (i: number) => ({ event_id: randomUUID(), type: 'schema.e2e', occurred_at: '2026-11-28T09:00:00.000Z', schema_version: 1, payload: { i, note: 'é' } });
+  // An hour ago, fixed for the file: inside the API's clock-skew bounds (S3-F8) whenever the suite runs.
+  const occurredAt = new Date(Date.now() - 3_600_000).toISOString();
+  const ev = (i: number) => ({ event_id: randomUUID(), type: 'schema.e2e', occurred_at: occurredAt, schema_version: 1, payload: { i, note: 'é' } });
 
   beforeAll(async () => {
     topic = await createTopic(6);

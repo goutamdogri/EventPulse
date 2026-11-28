@@ -116,6 +116,8 @@ export interface AppConfig {
   schema: SchemaConfig;
   /** Debug-only crash points api:* (packages/fault-injector), need DEBUG_FAULTS=true. */
   faults: FaultConfig;
+  /** S3-F8 clock-skew bounds on occurred_at vs received_at (inclusive limits). */
+  eventTime: { maxFutureS: number; maxPastDays: number };
 }
 
 // Called from a provider factory (not at import time) so tests can set env first.
@@ -222,6 +224,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       initRetryMaxMs: envInt(env, 'SCHEMA_INIT_RETRY_MAX_MS', 5_000, 1),
     },
     faults: loadFaultConfig(env),
+    eventTime: {
+      maxFutureS: envInt(env, 'OCCURRED_AT_MAX_FUTURE_S', 300, 0),
+      maxPastDays: envInt(env, 'OCCURRED_AT_MAX_PAST_DAYS', 365, 1),
+    },
   };
 }
 

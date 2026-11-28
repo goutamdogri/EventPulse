@@ -25,7 +25,7 @@ export function insertSql(table = 'events', dedup = true): string {
   SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::int[], $6::jsonb[], $7::timestamptz[]
   )
-  RETURNING tenant_id, event_id, received_at`;
+  RETURNING tenant_id, event_id, received_at, occurred_at`;
   }
   return `
   INSERT INTO ${table} (event_id, tenant_id, type, occurred_at, schema_version, payload, received_at, content_hash)
@@ -33,7 +33,7 @@ export function insertSql(table = 'events', dedup = true): string {
     $1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::int[], $6::jsonb[], $7::timestamptz[], $8::bytea[]
   )
   ON CONFLICT (tenant_id, event_id) DO NOTHING
-  RETURNING tenant_id, event_id, received_at`;
+  RETURNING tenant_id, event_id, received_at, occurred_at`;
 }
 export const INSERT_SQL = insertSql();
 
@@ -69,6 +69,8 @@ export interface WriteResult {
   connectMs?: number;
   /** Per newly inserted row: DB commit time - received_at, seconds (duplicates excluded). */
   freshnessS?: number[];
+  /** Per newly inserted row: received_at - occurred_at, seconds (S3-F8 lateness; negative = client clock ahead). */
+  latenessS?: number[];
   /** The rows that were NOT inserted (attempted - inserted of them). */
   duplicateKeys?: DuplicateRow[];
   /** Duplicates whose stored content differs from the incoming one (never overwritten). */
@@ -177,12 +179,12 @@ export class BatchWriter {
 
   /** One transaction: BEGIN, INSERT, sink_offsets upsert, COMMIT. Resolves only after COMMIT returned. */
   async writeChunk(rows: EventRow[]): Promise<WriteResult> {
-    if (rows.length === 0) return { attempted: 0, inserted: 0, durationMs: 0, connectMs: 0, freshnessS: [], duplicateKeys: [], conflicts: [] };
+    if (rows.length === 0) return { attempted: 0, inserted: 0, durationMs: 0, connectMs: 0, freshnessS: [], latenessS: [], duplicateKeys: [], conflicts: [] };
     const c0 = performance.now();
     const client = await this.pool.connect();
     const t0 = performance.now();
     try {
-      let inserted: { tenant_id: string; event_id: string; received_at: Date }[];
+      let inserted: { tenant_id: string; event_id: string; received_at: Date; occurred_at: Date }[];
       await client.query('BEGIN');
       try {
         const before = this.opts.points ? this.opts.points.beforeInsert : 'consumer:before-insert';
@@ -193,7 +195,7 @@ export class BatchWriter {
         }
         // RETURNING lists only the rows actually inserted (not the ones ON CONFLICT skipped), so freshness is
         // measured for real first writes, never for duplicates.
-        const r = await client.query<{ tenant_id: string; event_id: string; received_at: Date }>(this.sql, toColumns(rows, this.dedup));
+        const r = await client.query<{ tenant_id: string; event_id: string; received_at: Date; occurred_at: Date }>(this.sql, toColumns(rows, this.dedup));
         inserted = r.rows ?? [];
         if (this.dedup && this.opts.track) {
           const m = maxOffsets(rows);
@@ -215,6 +217,7 @@ export class BatchWriter {
         durationMs,
         connectMs: t0 - c0,
         freshnessS: inserted.map((x) => (committedAt - new Date(x.received_at).getTime()) / 1000),
+        latenessS: inserted.map((x) => (new Date(x.received_at).getTime() - new Date(x.occurred_at).getTime()) / 1000),
         duplicateKeys,
         conflicts: [],
       };
