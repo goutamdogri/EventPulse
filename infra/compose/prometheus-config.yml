@@ -31,6 +31,19 @@ scrape_configs:
           - "host.docker.internal:8011"
           - "host.docker.internal:8012"
 
+  # Stage 3 (S3-F4): admin-api (tenant config + outbox writes) and outbox-relay instances (8021 = default, 8022 =
+  # a standby or a second relay for C8). A target that isn't running just shows DOWN.
+  - job_name: eventpulse-admin-api
+    scrape_interval: 1s
+    scrape_timeout: 1s
+    static_configs:
+      - targets: ["host.docker.internal:8020"]
+  - job_name: eventpulse-outbox-relay
+    scrape_interval: 1s
+    scrape_timeout: 1s
+    static_configs:
+      - targets: ["host.docker.internal:8021", "host.docker.internal:8022"]
+
   # node_exporter runs with network_mode: host, so it is NOT reachable as "node-exporter".
   - job_name: node
     static_configs:

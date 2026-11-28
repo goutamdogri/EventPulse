@@ -131,6 +131,11 @@ services:
             --partitions "$$EVENTS_RAW_PARTITIONS" --replication-factor 3 \
             --config min.insync.replicas=2 --config retention.ms="$$EVENTS_RETRY_RETENTION_MS"
         done
+        # Stage 3 (S3-F4): tenant config change events from the outbox (key = tenant). Every message is a FULL config
+        # snapshot, so compaction (latest per tenant) loses nothing and lets a new consumer bootstrap from the topic.
+        $$T --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists --topic config.changed \
+          --partitions 3 --replication-factor 3 \
+          --config min.insync.replicas=2 --config cleanup.policy=compact
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.raw
         $$T --bootstrap-server "$$BOOTSTRAP" --describe --topic events.dlq
 

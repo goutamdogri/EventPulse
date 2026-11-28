@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Stop the ingest-api and consumer-sink started by make up (scripts/up.sh) (SIGTERM: graceful drain and commit).
+# Stop the services started by make up (ingest-api, consumer-sink, admin-api, outbox-relay) (scripts/up.sh) (SIGTERM: graceful drain and commit).
 # Containers keep running (they are shared with other stages): make kafka-down stops the brokers.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-for name in ingest-api consumer-sink; do
+for name in outbox-relay admin-api ingest-api consumer-sink; do
   f=".run/$name.pid"
   [ -f "$f" ] || { echo "$name: not started by make up"; continue; }
   pid=$(cat "$f")

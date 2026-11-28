@@ -42,7 +42,7 @@ describe('evaluate (S2-F7 reconciliation)', () => {
   it('clean run: every check OK, RECONCILED, exit 0', () => {
     const { start, end } = clean();
     const r = evaluate(start, end, k6(), facts());
-    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok', 'J:skipped', 'K:skipped']); // Stage 2 fixtures: no split
+    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok', 'J:skipped', 'K:skipped', 'L:skipped']); // Stage 2 fixtures: no split, no outbox
     expect(r).toMatchObject({ result: 'RECONCILED', exit_code: 0, findings: [] });
     expect(r.numbers).toMatchObject({ acked_202: 1000, kafka_records_delta: 1000, rows_distinct_run: 1000, duplicates_delta: 0 });
   });
@@ -204,7 +204,7 @@ describe('evaluate: Stage 3 duplicate accounting (S3-F3)', () => {
   it('resends stopped at the API: B counts replayed 202s, C/E use distinct events, J and K ok', () => {
     const { start, end, summary } = stage3();
     const r = evaluate(start, end, summary, facts());
-    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok', 'J:ok', 'K:ok']);
+    expect(r.checks.map((c) => `${c.id}:${c.status}`)).toEqual(['A:ok', 'B:ok', 'C:ok', 'D:ok', 'E:ok', 'F:ok', 'G:ok', 'H:ok', 'I:ok', 'J:ok', 'K:ok', 'L:skipped']);
     expect(r.numbers).toMatchObject({ accepted_unique: 1000, api_replayed_delta: 100, unexplained: 0, committed_delta: 1000, rows_new_total: 1000 });
     expect(r.checks.find((c) => c.id === 'B')!.detail).toBe('1100 == 1000 acked + 100 replayed');
   });
@@ -298,5 +298,17 @@ describe('evaluate: Stage 3 retry tiers and dlq_meta (S3-F5)', () => {
     const { start, end, summary } = stage3();
     const r = evaluate(start, end, summary, facts());
     expect(r.checks.find((c) => c.id === 'J')!.detail).toMatch(/new DLQ records 0/);
+  });
+
+  it('L: outbox drained is ok; a row older than 60 s at the end is a finding, never critical', () => {
+    const { start, end, summary } = stage3();
+    end.db.outbox = { unpublished: 0, oldest_age_s: null };
+    expect(status(evaluate(start, end, summary, facts()), 'L')).toBe('ok');
+    end.db.outbox = { unpublished: 3, oldest_age_s: 2 };
+    expect(status(evaluate(start, end, summary, facts()), 'L')).toBe('ok'); // moving
+    end.db.outbox = { unpublished: 40, oldest_age_s: 75 };
+    const r = evaluate(start, end, summary, facts());
+    expect(r.checks.find((c) => c.id === 'L')).toMatchObject({ status: 'finding', critical: false });
+    expect(r.checks.find((c) => c.id === 'L')!.detail).toMatch(/40 unpublished row\(s\), oldest 75 s: RELAY STUCK/);
   });
 });

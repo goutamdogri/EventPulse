@@ -103,3 +103,26 @@ If the server runs with weaker settings for an experiment, 202 promises less:
 - Retry on **503**, **409**, **500**, timeouts and network errors, with exponential backoff and jitter. Honor `Retry-After` when present.
 - **Always reuse the same `event_id` and the same `Idempotency-Key`** when retrying. A failed or timed-out request may still have been written to Kafka; the same key lets the API return the original result, and the same `event_id` lets the sink keep exactly one row.
 - Do not retry 400, 401, 413 or 422; they will fail the same way.
+
+## Tenant config admin API (S3-F4, `services/admin-api`, port 8020)
+
+Separate service and credential (`Authorization: Bearer <ADMIN_API_KEY>`); tenant keys are not accepted. Full
+reference: [services/admin-api/README.md](../services/admin-api/README.md).
+
+- `GET /v1/admin/tenants/:tenantId/config`: `{tenant_id, config, version, updated_at}` + `ETag: "<version>"`.
+- `PUT /v1/admin/tenants/:tenantId/config` with `{config}` and optional `If-Match: "<version>"`: 200 with the new
+  version and the `event_id` of the `config.changed` event; 412 when `If-Match` is stale; 400 on an unknown key or a
+  bad value; 404 unknown tenant; 503 + `Retry-After` when Postgres is down (the change did not happen).
+- **What 200 means:** the change and its `config.changed` event committed together. The event is published to Kafka
+  at least once (usually within milliseconds; later if Kafka is down, never lost). A non-2xx means the change did not
+  happen and nothing is published.
+
+### `config.changed` (topic, compacted, key = tenant id)
+
+Avro `config.changed-value` (`schemas/config/v1.avsc`): `event_id`, `tenant_id`, `version`, `changed_at`,
+`config_json` (the WHOLE config). Headers `event_id`, `version`, `outbox_id`, `content-type`. Consumers MUST:
+
+- dedup on `event_id`: a message can be delivered more than once (relay crash between publish and mark);
+- apply only if `version` is greater than the one they hold (`applyIfNewer` in `packages/outbox`): with the default
+  single relay messages of one tenant arrive in version order, but after a failover the last batch can be repeated.
+

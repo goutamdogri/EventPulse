@@ -6,9 +6,9 @@
   "license": "UNLICENSED",
   "type": "module",
   "scripts": {
-    "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector --filter @eventpulse/schema build",
+    "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector --filter @eventpulse/schema --filter @eventpulse/retry --filter @eventpulse/outbox build",
     "test": "vitest run",
-    "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink --filter @eventpulse/ingest-api build",
+    "pretest:e2e": "pnpm --filter @eventpulse/consumer-sink --filter @eventpulse/ingest-api --filter @eventpulse/admin-api --filter @eventpulse/outbox-relay build",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "crash-matrix": "pnpm test:e2e test/crash-matrix.e2e-spec.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -17,6 +17,7 @@
     "@eventpulse/fault-injector": "workspace:*",
     "@eventpulse/idempotency": "workspace:*",
     "@eventpulse/kafka-config": "workspace:*",
+    "@eventpulse/outbox": "workspace:*",
     "@eventpulse/schema": "workspace:*",
     "dotenv": "^18.0.10",
     "pg": "^8.23.1"

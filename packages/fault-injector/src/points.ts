@@ -26,6 +26,10 @@ export const CRASH_POINTS = [
   { name: 'dlq:after-dlq-publish-before-meta', component: 'dlq', description: 'dead letter acknowledged by events.dlq, no dlq_meta row, source offset not committed' },
   { name: 'dlq:after-meta-before-commit', component: 'dlq', description: 'dead letter in events.dlq and dlq_meta, source offset not committed' },
   { name: 'replay:after-produce-before-mark', component: 'replay', description: 'dlq-replay: dead letter re-injected into the source topic (acked), dlq_meta row not marked as replayed' },
+  { name: 'admin:after-update-before-commit', component: 'admin', description: 'admin-api: tenant_config updated and outbox row inserted, transaction not committed' },
+  { name: 'relay:before-publish', component: 'relay', description: 'outbox-relay: rows claimed (attempts + 1 committed) and locked, nothing produced' },
+  { name: 'relay:after-publish-before-mark', component: 'relay', description: 'outbox-relay: batch acknowledged by Kafka, published_at not set' },
+  { name: 'relay:after-mark-before-commit', component: 'relay', description: 'outbox-relay: batch acknowledged, published_at set, transaction not committed' },
 ] as const satisfies readonly CrashPointInfo[];
 
 export type CrashPointName = (typeof CRASH_POINTS)[number]['name'];

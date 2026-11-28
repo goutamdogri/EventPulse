@@ -1,0 +1,29 @@
+{
+  "type": "record",
+  "name": "ConfigChanged",
+  "namespace": "com.eventpulse.config",
+  "doc": "A tenant's config changed (S3-F4). Written by services/admin-api into the outbox in the same transaction as the change, published to config.changed by services/outbox-relay (at least once). Carries the FULL config, not a diff: a consumer applies it if version > the version it has, and never needs an earlier event.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": { "type": "string", "logicalType": "uuid" },
+      "doc": "One per change (UUID, lower case): consumers dedup a republished message on it."
+    },
+    { "name": "tenant_id", "type": "string" },
+    {
+      "name": "version",
+      "type": "long",
+      "doc": "tenant_config.version after the change: 1, 2, 3... per tenant. Apply only if greater than yours."
+    },
+    {
+      "name": "changed_at",
+      "type": { "type": "long", "logicalType": "timestamp-millis" },
+      "doc": "Commit-side time of the change (tenant_config.updated_at), UTC epoch milliseconds."
+    },
+    {
+      "name": "config_json",
+      "type": "string",
+      "doc": "The whole tenant config after the change, as JSON text (Avro has no 'any JSON object' type)."
+    }
+  ]
+}

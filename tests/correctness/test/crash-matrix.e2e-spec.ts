@@ -61,6 +61,30 @@ const EXPECT: Record<string, (r: CrashResult) => void> = {
     expect(r.duplicatesProcessed).toBe(1);
     expect(r.committedAtCrash).toBe(REPLAY_CRASH_MARKED);
   },
+  // Outbox relay (S3-F4). Claimed + locked, nothing produced: published once after the restart; the claimed batch
+  // keeps attempts 2 (an attempt that never reached Kafka).
+  'relay:before-publish': (r) => {
+    expect(r.duplicatesProduced).toBe(0);
+    expect(r.notes).toMatch(/max attempts 2/);
+  },
+  // Acked, not marked: the batch is published again; the consumer applies each change once.
+  'relay:after-publish-before-mark': (r) => {
+    expect(r.duplicatesProduced).toBe(50);
+    expect(r.duplicatesProcessed).toBe(50);
+  },
+  // Marked but not committed: the mark dies with the connection, same as above.
+  'relay:after-mark-before-commit': (r) => {
+    expect(r.duplicatesProduced).toBe(50);
+    expect(r.duplicatesProcessed).toBe(50);
+  },
+  // admin-api killed with the change + outbox row uncommitted: nothing of it anywhere, the next change gets the
+  // next version (no gap), every committed change published once.
+  'admin:after-update-before-commit': (r) => {
+    expect(r.duplicatesProduced).toBe(0);
+    expect(r.storedAtCrash).toBe(5);
+    expect(r.committedAtCrash).toBe(5);
+    expect(r.notes).toMatch(/0 published; next PUT got version 6; versions on the topic 1,2,3,4,5,6$/);
+  },
   // Key done: the retry gets the original result (replayed 202), nothing new is produced.
   'api:after-complete-before-response': (r) => {
     expect(r.duplicatesProduced).toBe(0);
@@ -97,7 +121,7 @@ describe('crash matrix', () => {
     expect(r.crashed).toBe(true);
     expect(r.lost).toBe(0);
     expect(r.duplicatesStored).toBe(0);
-    if (point.component === 'consumer') expect(r.duplicatesProduced).toBe(0); // consumer crashes never touch the log
+    if (point.component === 'consumer' || point.component === 'admin') expect(r.duplicatesProduced).toBe(0); // they never touch the log
     // retry / dlq / replay rows: duplicatesProduced counts records in the source (retry) or dead letters published twice (dlq)
     EXPECT[point.name]?.(r);
   });

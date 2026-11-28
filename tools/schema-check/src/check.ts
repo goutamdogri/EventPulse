@@ -107,8 +107,9 @@ export interface FixtureResult {
 
 export async function checkFixtures(client: RegistryClient, spec: SubjectSpec, schemasDir: string, prefix: string): Promise<FixtureResult[]> {
   const out: FixtureResult[] = [];
+  if (!spec.fixtures) return out; // a subject's fixtures are written against ITS schema: none listed, none run
   for (const expected of ['incompatible', 'compatible'] as const) {
-    const dir = resolve(schemasDir, 'fixtures', expected);
+    const dir = resolve(schemasDir, spec.fixtures, expected);
     let files: string[] = [];
     try {
       files = readdirSync(dir).filter((f) => f.endsWith('.avsc')).sort();
@@ -116,7 +117,7 @@ export async function checkFixtures(client: RegistryClient, spec: SubjectSpec, s
       continue;
     }
     for (const f of files) {
-      const file = `fixtures/${expected}/${f}`;
+      const file = `${spec.fixtures}/${expected}/${f}`;
       const candidate = { file, schema: readSchemaFile(schemasDir, file).schema };
       const own = await checkHistory(client, spec, { prefix: `${prefix}-own`, candidate });
       const back = await checkHistory(client, spec, { prefix: `${prefix}-bwd`, candidate, level: 'BACKWARD' });

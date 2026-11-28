@@ -1,6 +1,6 @@
 // One crash scenario per component. The crash matrix iterates over CRASH_POINTS (packages/fault-injector) and
 // looks up the component's scenario here, so a point whose component has no scenario fails the build
-// (crash-matrix.spec.ts). Later Stage 3 steps add relay and admin scenarios.
+// (crash-matrix.spec.ts).
 import { randomUUID } from 'node:crypto';
 import type { CrashPointInfo } from '@eventpulse/fault-injector';
 import { createKafka, loadKafkaClientConfig } from '@eventpulse/kafka-config';
@@ -25,6 +25,7 @@ import type { CrashResult } from './report.js';
 import { postEvent, spawnApi, waitApiReady } from '../api-process.js';
 import type { ApiProcess } from '../api-process.js';
 import { dlqLane, runReplayCli } from '../dlq-replay.js';
+import { OutboxLane, metricValue, waitHttpReady } from '../outbox.js';
 
 export type Scenario = (point: CrashPointInfo, store: StoreProbe) => Promise<CrashResult>;
 
@@ -374,10 +375,118 @@ async function replayScenario(point: CrashPointInfo, store: StoreProbe): Promise
   }
 }
 
+// --- Transactional outbox (S3-F4) ---------------------------------------------------------------------------------
+// relay: RELAY_N committed config changes; the relay (batches of RELAY_BATCH) is killed at the point on batch 2 and
+// restarted. Every change must reach the topic (0 lost) and a consumer applying by version must end on version
+// RELAY_N having applied each change once. "Processed again" = republished copies the consumer saw as duplicates.
+const RELAY_N = 200;
+const RELAY_BATCH = 50;
+
+async function relayScenario(point: CrashPointInfo): Promise<CrashResult> {
+  const lane = await OutboxLane.create();
+  try {
+    await lane.writeChanges(RELAY_N);
+    const crashing = lane.relay({ RELAY_BATCH_SIZE: String(RELAY_BATCH), DEBUG_FAULTS: 'true', FAULTS: `${point.name}@b2` });
+    const exit = await Promise.race([crashing.exited, sleep(60_000).then(() => null)]);
+    const crashed = exit?.signal === 'SIGKILL' && crashing.log.join('').includes(`CRASH_AT=${point.name}`);
+    if (!crashed) throw new Error(`${point.name}: relay did not crash there (exit ${JSON.stringify(exit)})\n${crashing.log.join('').slice(-3000)}`);
+    const atCrash = await lane.counts();
+    const inTopicAtCrash = await logTotal(lane.topic); // end offsets: exact, no consumer needed
+
+    const t0 = Date.now();
+    const relay = lane.relay({ RELAY_BATCH_SIZE: String(RELAY_BATCH) });
+    await waitFor(async () => (await lane.counts()).published === RELAY_N, 60_000, `${point.name}: recovery`);
+    const recoveryMs = Date.now() - t0;
+    const got = await lane.read(20_000, (rs) => rs.length >= RELAY_N);
+    const view = OutboxLane.apply(got);
+    const distinct = new Set(got.map((c) => c.eventId)).size;
+    const republished = await metricValue(relay, 'ep_outbox_republished_total');
+    const after = await lane.counts();
+    await relay.stop();
+    return {
+      point: point.name,
+      component: point.component,
+      description: point.description,
+      sent: RELAY_N,
+      duplicatesProduced: got.length - RELAY_N,
+      storedAtCrash: atCrash.published, // relay: rows marked published when it died
+      committedAtCrash: inTopicAtCrash, // relay: messages in the topic when it died
+      duplicatesProcessed: view.counts.duplicate,
+      duplicatesStored: view.counts.applied - RELAY_N, // a change applied twice by the consumer (must be 0)
+      lost: RELAY_N - distinct,
+      recoveryMs,
+      crashed,
+      notes: `consumer applied ${view.counts.applied}, duplicates ${view.counts.duplicate}, final version ${view.get(lane.tenant)?.version}; max attempts ${after.maxAttempts}, ep_outbox_republished_total ${republished}`,
+    };
+  } finally {
+    await lane.cleanup();
+  }
+}
+
+// admin: ADMIN_OK changes go through admin-api; then admin-api is killed at the point inside the transaction of the
+// next PUT and restarted; one more PUT. The killed change must not exist anywhere (config, outbox, topic); every
+// committed one must be published once, versions 1..ADMIN_OK+1 without a gap.
+const ADMIN_OK = 5;
+
+async function adminScenario(point: CrashPointInfo): Promise<CrashResult> {
+  const lane = await OutboxLane.create();
+  try {
+    const relay = lane.relay();
+    const admin = lane.admin();
+    await Promise.all([waitHttpReady(relay), waitHttpReady(admin)]);
+    for (let i = 1; i <= ADMIN_OK; i++) {
+      const r = await lane.put(admin, { rate_limit_per_s: i });
+      if (r.status !== 200) throw new Error(`${point.name}: PUT ${i} -> ${r.status} ${JSON.stringify(r.body)}`);
+    }
+    await admin.stop();
+
+    const crashing = lane.admin({ DEBUG_FAULTS: 'true', FAULTS: point.name });
+    await waitHttpReady(crashing);
+    const lost = await lane.put(crashing, { rate_limit_per_s: 666 });
+    const exit = await Promise.race([crashing.exited, sleep(30_000).then(() => null)]);
+    const crashed = lost.status === 'network_error' && exit?.signal === 'SIGKILL' && crashing.log.join('').includes(`CRASH_AT=${point.name}`);
+    if (!crashed) throw new Error(`${point.name}: admin-api did not crash there (PUT ${lost.status}, exit ${JSON.stringify(exit)})\n${crashing.log.join('').slice(-3000)}`);
+    const versionAtCrash = (await lane.configRow())?.version ?? 0;
+    const rowsAtCrash = (await lane.counts()).rows;
+
+    const t0 = Date.now();
+    const again = lane.admin();
+    await waitHttpReady(again);
+    const next = await lane.put(again, { rate_limit_per_s: ADMIN_OK + 1 });
+    const total = ADMIN_OK + 1;
+    await waitFor(async () => (await lane.counts()).published === total, 30_000, `${point.name}: published`);
+    const recoveryMs = Date.now() - t0;
+    const got = await lane.read(20_000, (rs) => rs.length >= total);
+    const view = OutboxLane.apply(got);
+    const ghost = got.filter((c) => c.config.rate_limit_per_s === 666).length;
+    await again.stop();
+    await relay.stop();
+    return {
+      point: point.name,
+      component: point.component,
+      description: point.description,
+      sent: total, // committed changes (the killed one never committed)
+      duplicatesProduced: got.length - total + ghost,
+      storedAtCrash: versionAtCrash, // admin: tenant_config version when it died
+      committedAtCrash: rowsAtCrash, // admin: outbox rows when it died
+      duplicatesProcessed: view.counts.duplicate,
+      duplicatesStored: view.counts.applied - total,
+      lost: total - new Set(got.map((c) => c.eventId)).size,
+      recoveryMs,
+      crashed,
+      notes: `killed change: version stayed ${versionAtCrash}, outbox rows ${rowsAtCrash}, ${ghost} published; next PUT got version ${next.body?.version}; versions on the topic ${got.map((c) => c.version).join(',')}`,
+    };
+  } finally {
+    await lane.cleanup();
+  }
+}
+
 export const SCENARIOS: Readonly<Record<string, Scenario>> = {
   consumer: consumerScenario,
   api: apiScenario,
   retry: retryScenario,
   dlq: dlqScenario,
   replay: replayScenario,
+  relay: relayScenario,
+  admin: adminScenario,
 };

@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "ConfigChanged",
+  "namespace": "com.eventpulse.config",
+  "fields": [
+    { "name": "event_id", "type": { "type": "string", "logicalType": "uuid" } },
+    { "name": "tenant_id", "type": "string" },
+    { "name": "version", "type": "long" },
+    { "name": "changed_at", "type": { "type": "long", "logicalType": "timestamp-millis" } }
+  ]
+}

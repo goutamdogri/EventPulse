@@ -5,6 +5,8 @@ import { COMPATIBILITY_LEVELS } from './registry.js';
 import type { CompatibilityLevel } from './registry.js';
 
 export const SUBJECT_EVENTS_RAW = 'events.raw-value';
+/** S3-F4: tenant config change events (services/admin-api via the outbox). */
+export const SUBJECT_CONFIG_CHANGED = 'config.changed-value';
 
 /** schemas/ at the repo root (packages/schema/dist -> ../../../schemas), or SCHEMAS_DIR. */
 export function schemasDir(env: Record<string, string | undefined> = process.env): string {
@@ -18,6 +20,8 @@ export interface SubjectSpec {
   compatibility: CompatibilityLevel;
   /** Versions in registration order: file path (relative to schemas/) and canonical schema text. */
   versions: { file: string; schema: string; parsed: object }[];
+  /** Fixtures directory (relative to schemas/) with compatible/ and incompatible/ candidates; none = no fixtures. */
+  fixtures?: string;
 }
 
 /** The schema text sent to the registry: the parsed JSON re-serialized without whitespace (stable). */
@@ -30,10 +34,15 @@ export function readSchemaFile(dir: string, file: string): { schema: string; par
 
 export function loadSubjects(dir = schemasDir()): SubjectSpec[] {
   const cfg = JSON.parse(readFileSync(resolve(dir, 'subjects.json'), 'utf8'));
-  return Object.entries(cfg.subjects as Record<string, { files: string[]; compatibility: string }>).map(([subject, s]) => {
+  return Object.entries(cfg.subjects as Record<string, { files: string[]; compatibility: string; fixtures?: string }>).map(([subject, s]) => {
     if (!COMPATIBILITY_LEVELS.includes(s.compatibility as CompatibilityLevel)) throw new Error(`${subject}: bad compatibility ${s.compatibility}`);
     if (!Array.isArray(s.files) || s.files.length === 0) throw new Error(`${subject}: no files`);
-    return { subject, compatibility: s.compatibility as CompatibilityLevel, versions: s.files.map((file) => ({ file, ...readSchemaFile(dir, file) })) };
+    return {
+      subject,
+      compatibility: s.compatibility as CompatibilityLevel,
+      versions: s.files.map((file) => ({ file, ...readSchemaFile(dir, file) })),
+      ...(s.fixtures ? { fixtures: s.fixtures } : {}),
+    };
   });
 }
 

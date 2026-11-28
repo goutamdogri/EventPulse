@@ -8,6 +8,8 @@ COMPOSE_CORE  := docker compose -f infra/compose/docker-compose.yml
 COMPOSE_KAFKA := docker compose -f infra/compose/docker-compose.kafka.yml
 SINK          := pnpm --filter @eventpulse/consumer-sink
 API           := pnpm --filter @eventpulse/ingest-api
+ADMIN         := pnpm --filter @eventpulse/admin-api
+RELAY         := pnpm --filter @eventpulse/outbox-relay
 CORRECTNESS   := pnpm --filter @eventpulse/correctness-tests
 UNIT_PACKAGES := --filter "./packages/*" --filter "./services/*" --filter "./tools/*" --filter "./tests/*"
 TOXI_URL      ?= http://localhost:8474
@@ -18,9 +20,9 @@ help: ## List targets
 
 # --- Pipeline ---
 .PHONY: up down lag audit reset
-up: ## Whole pipeline: containers, topics, migrations, build, consumer-sink, ingest-api (scripts/up.sh)
+up: ## Whole pipeline: containers, topics, migrations, schemas, tenants, build, consumer-sink, ingest-api, admin-api, outbox-relay
 	scripts/up.sh
-down: ## Stop ingest-api and consumer-sink gracefully (containers keep running)
+down: ## Stop the four services gracefully (containers keep running)
 	scripts/down.sh
 lag: ## Consumer group lag per partition
 	scripts/lag.sh
@@ -81,10 +83,21 @@ dlq-stats: ## Unreplayed dead letters by class, code, tenant, failed topic and a
 dlq-replay: ## DLQ tool: make dlq-replay ARGS="replay --error-class PERMANENT_DB" (dry run unless ARGS has --execute)
 	node tools/dlq-replay/src/cli.ts $(or $(ARGS),--help)
 
+# --- Tenant config and outbox (S3-F4: services/admin-api, services/outbox-relay, docs/runbooks/outbox-stuck.md) ---
+.PHONY: seed-tenants admin-start relay-start outbox
+seed-tenants: ## Insert the tenants of ingest-api's API_KEYS into `tenants` (idempotent)
+	scripts/seed-tenants.sh
+admin-start: ## admin-api on :8020 (services/admin-api/.env), foreground
+	$(ADMIN) start:prod
+relay-start: ## outbox-relay on :8021 (services/outbox-relay/.env), foreground; a 2nd one: PORT=8022 stands by
+	$(RELAY) start:prod
+outbox: ## Outbox backlog, oldest unpublished age, relay leader (from the relay's /debug/stats)
+	@curl -sf localhost:8021/debug/stats | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(JSON.stringify({leader:j.is_leader,backlog:j.backlog,published:j.relay.published,republished:j.relay.republished,failed_cycles:j.relay.failedCycles,last_error:j.relay.lastError},null,2))})' || echo "outbox-relay not reachable on :8021"
+
 # --- Build and run single services ---
 .PHONY: build api-start api-start-pinned consumer-start consumer-start-pinned
-build: ## Build the shared packages, ingest-api and consumer-sink
-	$(API) build && $(SINK) build
+build: ## Build the shared packages and the four services
+	$(API) build && $(SINK) build && $(ADMIN) build && $(RELAY) build
 api-start: ## ingest-api on :8000 (services/ingest-api/.env), foreground
 	$(API) start:prod
 api-start-pinned: ## Same, pinned with taskset to SERVER_CPUS (default 0,6)
@@ -99,10 +112,10 @@ consumer-start-pinned: ## Same, pinned with taskset to CONSUMER_CPUS (default 0,
 test: ## Unit tests of every package, service, tool and the correctness suite (no infrastructure)
 	pnpm --filter "./packages/*" build >/dev/null
 	pnpm $(UNIT_PACKAGES) --workspace-concurrency=1 test
-test-e2e: toxiproxy migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api
+test-e2e: toxiproxy migrate-test ## Service e2e suites (Kafka + test database): consumer-sink, then ingest-api (admin-api/relay: make correctness)
 	$(SINK) test:e2e
 	$(API) test:e2e
-correctness: toxiproxy migrate-test ## Correctness suite: log replay + crash matrix (regenerates docs/generated/crash-matrix.*)
+correctness: toxiproxy migrate-test ## Correctness suite: replay, crash matrix (regenerates docs/generated/crash-matrix.*), retry, DLQ replay, outbox
 	$(CORRECTNESS) test:e2e
 crash-matrix: toxiproxy migrate-test ## Only the crash matrix; one point: make crash-matrix ONLY=consumer:after-db-commit
 	$(if $(ONLY),CRASH_MATRIX_ONLY=$(ONLY)) $(CORRECTNESS) crash-matrix

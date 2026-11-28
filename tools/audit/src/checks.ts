@@ -22,10 +22,15 @@
 //       migration 0006 is there; else new DLQ topic records)             waiting on a tier is committed but not stored yet)
 //      == 0 ("unexplained difference", must be zero)                   counters incomplete (restart): reported
 //   K  API idempotency (replayed, in progress, key reused, fail open)  reported; fail_open / fail_closed are findings
+//   L  outbox lag at the end (S3-F4): unpublished rows, oldest age    reported; a row older than OUTBOX_LAG_FINDING_S
+//                                                                      (60 s) is a finding (relay stuck or Kafka down)
 //
 // Exit code: 1 if a critical check failed, else 2 if not drained, else 0.
 
 import type { AuditResult, Check, ConsumerStats, IdemCounts, K6Summary, RunFacts, Snapshot } from './types.ts';
+
+/** An unpublished outbox row older than this at the end of a run is a finding (check L). */
+export const OUTBOX_LAG_FINDING_S = 60;
 
 const sumHigh = (s: Snapshot['raw']) => s.reduce((a, p) => a + p.high, 0);
 
@@ -216,6 +221,23 @@ export function evaluate(start: Snapshot, end: Snapshot, k6: K6Summary | null, f
         `new ${idem.new}, replayed ${idem.replayed} (duplicates stopped at the API), in progress ${idem.in_progress} (409), key reused ${idem.payload_mismatch} (422)` +
         (degraded > 0 ? `; REDIS DEGRADED: fail_open ${idem.fail_open} (accepted without dedup), fail_closed ${idem.fail_closed} (503)` : '') +
         (idem.disabled > 0 ? `; disabled ${idem.disabled}` : ''),
+    });
+  }
+
+  // L: the transactional outbox (tenant config changes) is drained, or at least moving.
+  const ob = end.db.outbox;
+  if (!ob) add({ id: 'L', title: 'outbox lag', status: 'skipped', critical: false, detail: 'no outbox table (before migration 0008)' });
+  else {
+    const stuck = ob.unpublished > 0 && (ob.oldest_age_s ?? 0) > OUTBOX_LAG_FINDING_S;
+    add({
+      id: 'L',
+      title: 'outbox lag',
+      status: stuck ? 'finding' : 'ok',
+      critical: false,
+      detail:
+        ob.unpublished === 0
+          ? '0 unpublished rows'
+          : `${ob.unpublished} unpublished row(s), oldest ${Math.round(ob.oldest_age_s ?? 0)} s${stuck ? ': RELAY STUCK OR KAFKA DOWN (docs/runbooks/outbox-stuck.md)' : ''}`,
     });
   }
 

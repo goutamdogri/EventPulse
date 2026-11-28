@@ -1,0 +1,29 @@
+{
+  "name": "@eventpulse/outbox-relay",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Stage 3 (S3-F4): runs the outbox PollingRelay (packages/outbox): publishes committed outbox rows to Kafka, at least once, single active relay by default.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector --filter @eventpulse/schema --filter @eventpulse/retry --filter @eventpulse/outbox build && tsc -p tsconfig.json",
+    "start:prod": "node --env-file=.env dist/main.js",
+    "pretest": "pnpm --filter @eventpulse/kafka-config --filter @eventpulse/fault-injector --filter @eventpulse/schema --filter @eventpulse/retry --filter @eventpulse/outbox build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@eventpulse/fault-injector": "workspace:*",
+    "@eventpulse/kafka-config": "workspace:*",
+    "@eventpulse/outbox": "workspace:*",
+    "@eventpulse/retry": "workspace:*",
+    "@prometheus-io/client": "^0.16.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.12"
+  }
+}

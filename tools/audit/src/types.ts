@@ -53,7 +53,8 @@ export interface Snapshot {
   dlq: PartitionOffsets[];
   committed: { partition: number; offset: number }[]; // -1 = never committed
   /** dlq_meta_rows: dead-lettered SOURCE records (one per record, duplicates excluded); null before migration 0006. */
-  db: { rows_total: number; dlq_meta_rows?: number | null };
+  /** outbox: unpublished rows and the age of the oldest (S3-F4); null before migration 0008. */
+  db: { rows_total: number; dlq_meta_rows?: number | null; outbox?: { unpublished: number; oldest_age_s: number | null } | null };
   /** S3-F5: lag of the retry-tier group summed over the tier topics (null when there are no tier topics). */
   retry_lag?: number | null;
   api: ApiStats | null;

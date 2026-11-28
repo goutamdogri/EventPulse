@@ -109,12 +109,17 @@ export async function takeSnapshot(cfg: AuditConfig): Promise<Snapshot> {
   await client.connect();
   let rows_total = 0;
   let dlq_meta_rows: number | null = null;
+  let outbox: { unpublished: number; oldest_age_s: number | null } | null = null;
   try {
     rows_total = Number((await client.query('select count(*) from events')).rows[0].count);
     dlq_meta_rows = await client
       .query('select count(*) from dlq_meta')
       .then((r) => Number(r.rows[0].count))
       .catch(() => null); // before migration 0006
+    outbox = await client
+      .query('select count(*)::int as n, extract(epoch from now() - min(created_at))::float8 as age from outbox where published_at is null')
+      .then((r) => ({ unpublished: r.rows[0].n as number, oldest_age_s: r.rows[0].age === null ? null : Number(r.rows[0].age) }))
+      .catch(() => null); // before migration 0008
   } finally {
     await client.end();
   }
@@ -153,7 +158,7 @@ export async function takeSnapshot(cfg: AuditConfig): Promise<Snapshot> {
   }
   if (consumers.length === 0) notes.push('no consumer /debug/stats reachable');
 
-  return { taken_at: new Date().toISOString(), topic: cfg.topic, dlq_topic: cfg.dlqTopic, group: cfg.group, ...k, db: { rows_total, dlq_meta_rows }, api, consumers, notes };
+  return { taken_at: new Date().toISOString(), topic: cfg.topic, dlq_topic: cfg.dlqTopic, group: cfg.group, ...k, db: { rows_total, dlq_meta_rows, outbox }, api, consumers, notes };
 }
 
 function idemCounts(b: Record<string, number>): IdemCounts {
